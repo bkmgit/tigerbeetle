@@ -2500,10 +2500,11 @@ pub fn ReplicaType(
                 stage.target.checkpoint_id,
             });
 
-            const manifest_buffer = stage.manifest.write(.{
-                .total_buffer = self.superblock.manifest_buffer,
-                .total_size = @intCast(u32, message.header.commit),
-                .total_checksum = message.header.context,
+            const manifest_buffer = stage.manifest.write_chunk(.{
+                .buffer = self.superblock.manifest_buffer,
+                .size = @intCast(u32, message.header.commit),
+                .checksum = message.header.context,
+            }, .{
                 .chunk = message.body(),
                 .chunk_offset = message.header.request,
             }) orelse return;
@@ -2530,10 +2531,11 @@ pub fn ReplicaType(
                 stage.target.checkpoint_id,
             });
 
-            const free_set_buffer = stage.free_set.write(.{
-                .total_buffer = self.superblock.free_set_buffer,
-                .total_size = @intCast(u32, message.header.commit),
-                .total_checksum = message.header.context,
+            const free_set_buffer = stage.free_set.write_chunk(.{
+                .buffer = self.superblock.free_set_buffer,
+                .size = @intCast(u32, message.header.commit),
+                .checksum = message.header.context,
+            }, .{
                 .chunk = message.body(),
                 .chunk_offset = message.header.request,
             }) orelse return;
@@ -2560,10 +2562,11 @@ pub fn ReplicaType(
                 stage.target.checkpoint_id,
             });
 
-            const client_sessions_buffer = stage.client_sessions.write(.{
-                .total_buffer = self.superblock.client_sessions_buffer,
-                .total_size = @intCast(u32, message.header.commit),
-                .total_checksum = message.header.context,
+            const client_sessions_buffer = stage.client_sessions.write_chunk(.{
+                .buffer = self.superblock.client_sessions_buffer,
+                .size = @intCast(u32, message.header.commit),
+                .checksum = message.header.context,
+            }, .{
                 .chunk = message.body(),
                 .chunk_offset = message.header.request,
             }) orelse return;
