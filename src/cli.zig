@@ -96,12 +96,6 @@ const Command = enum {
 };
 
 pub fn main() !void {
-    const stderr = std.io.getStdErr().writer();
-
-    if (builtin.mode != .ReleaseSafe) {
-        try stderr.print("CLI must be built as ReleaseSafe.\n", .{});
-    }
-
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -174,7 +168,7 @@ pub fn main() !void {
 
     switch (cmd) {
         .create_account => try create_account(allocator, &args, context),
-        else => try stderr.print("Command must be create-account, get-account, create-transfer, or get-transfer.\n", .{}),
+        else => try panic("Command must be create-account, get-account, create-transfer, or get-transfer.\n", .{}),
     }
 
     while (!context.done) {
@@ -291,15 +285,19 @@ fn send_complete(
             if (create_account_results.len > 0) {
                 panic("CreateAccountsesults: {any}", .{create_account_results});
             }
+
+            std.debug.print("Ok!\n", .{});
         },
         .lookup_accounts => {
             const lookup_account_results = std.mem.bytesAsSlice(
                 tb.Account,
                 result_payload,
             );
-            if (lookup_account_results.len > 0) {
-                panic("LookupAccountResults: {any}", .{lookup_account_results});
+            if (lookup_account_results.len != 0) {
+                panic("Failed to lookup account.", .{});
             }
+
+            std.debug.print("{any}", .{lookup_account_results});
         },
         else => unreachable,
     }

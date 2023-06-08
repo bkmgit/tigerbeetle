@@ -122,12 +122,16 @@ pub fn build(b: *std.build.Builder) void {
     }
 
     {
+        const cli = b.addExecutable("cli", "src/cli.zig");
+        cli.setBuildMode(mode);
+        cli.setTarget(target);
+        cli.install();
+        cli.addOptions("vsr_options", options);
+
+        var install_step = b.addInstallArtifact(cli);
+
         const cli_build = b.step("cli", "Build TigerBeetle CLI");
-        const binary = b.addExecutable("cli", "src/cli.zig");
-        binary.setBuildMode(mode);
-        binary.setTarget(target);
-        binary.addOptions("vsr_options", options);
-        cli_build.dependOn(&binary.step);
+        cli_build.dependOn(&install_step.step);
     }
 
     // Linting targets
