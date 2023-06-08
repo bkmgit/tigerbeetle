@@ -81,6 +81,20 @@ fn parse_arg_bool(
     return true;
 }
 
+const Context = struct {
+    done: bool,
+    client: *Client,
+    message: ?*MessagePool.Message,
+};
+
+const Command = enum {
+    none,
+    create_account,
+    lookup_account,
+    create_transfer,
+    lookup_transfer,
+};
+
 pub fn main() !void {
     const stderr = std.io.getStdErr().writer();
 
@@ -105,13 +119,13 @@ pub fn main() !void {
     // Discard executable name.
     _ = try args.next(allocator).?;
 
-    var cmd = .none;
+    var cmd: Command = .none;
     var pre_cmd_flags = true;
-    if (args.next(allocator)) |arg_or_err| {
+    while (args.next(allocator)) |arg_or_err| {
         const arg = try arg_or_err;
 
         // Parse pre-command arguments.
-        if (std.mem.eql(u8, command[0..2], "--")) {
+        if (std.mem.eql(u8, arg[0..2], "--")) {
             _ = (try parse_arg_addresses(allocator, &args, arg, "--addresses", &addresses)) or
                 panic("Unrecognized argument: \"{}\"", .{std.zig.fmtEscapes(arg)});
             continue;
@@ -121,24 +135,22 @@ pub fn main() !void {
 
         // Parse command
         if (!pre_cmd_flags) {
-            if (std.mem.eql(u8, command, "create-account")) {
+            if (std.mem.eql(u8, arg, "create-account")) {
                 cmd = .create_account;
-            } else if (std.mem.eql(u8, command, "get-account")) {
-                cmd = .get_account;
-            } else if (std.mem.eql(u8, command, "create-transfer")) {
+            } else if (std.mem.eql(u8, arg, "lookup-account")) {
+                cmd = .lookup_account;
+            } else if (std.mem.eql(u8, arg, "create-transfer")) {
                 cmd = .create_transfer;
-            } else if (std.mem.eql(u8, command, "get-transfer")) {
-                cmd = .get_transfer;
+            } else if (std.mem.eql(u8, arg, "lookup-transfer")) {
+                cmd = .lookup_transfer;
             }
         }
 
         break;
     }
 
-    switch (cmd) {
-        .create_account => create_account(allocator, &addresses, &args),
-        _ => try stderr.print("Command must be create-account, get-account, create-transfer, or get-transfer.\n", .{}),
-    }
+    var context = try allocator.create(Context);
+    context.done = false;
 
     const client_id = std.crypto.random.int(u128);
     const cluster_id: u32 = 0;
@@ -158,154 +170,106 @@ pub fn main() !void {
             .io = &io,
         },
     );
-    defer client.deinit(allocator);
-    var context = try allocator.create(Context);
-    context.done = false;
+    context.client = &client;
+
+    switch (cmd) {
+        .create_account => try create_account(allocator, &args, context),
+        else => try stderr.print("Command must be create-account, get-account, create-transfer, or get-transfer.\n", .{}),
+    }
 
     while (!context.done) {
-        client.tick();
+        context.client.tick();
         try io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
     }
 }
 
-fn create_account() void {
-    b.batch_accounts.appendAssumeCapacity(.{
-        .id = @bitReverse(u128, b.account_index + 1),
+fn create_account(
+    allocator: std.mem.Allocator,
+    args: *std.process.ArgIterator,
+    context: *Context,
+) !void {
+    var batch_accounts = try std.ArrayList(tb.Account).initCapacity(allocator, 1);
+    var account = tb.Account{
+        .id = 0,
         .user_data = 0,
         .reserved = [_]u8{0} ** 48,
-        .ledger = 2,
-        .code = 1,
+        .ledger = 0,
+        .code = 0,
         .flags = .{},
         .debits_pending = 0,
         .debits_posted = 0,
         .credits_pending = 0,
         .credits_posted = 0,
-    });
+    };
+    if (args.next(allocator)) |arg_or_err| {
+        const arg = try arg_or_err;
 
-    // Submit batch.
-    b.send(
-        create_accounts,
-        .create_accounts,
-        std.mem.sliceAsBytes(b.batch_accounts.items),
-    );
-}
-
-fn create_transfers(b: *Benchmark) void {
-    if (b.transfer_index >= b.transfer_count) {
-        b.finish();
-        return;
-    }
-
-    if (b.transfer_index == 0) {
-        // Init timer.
-        b.timer.reset();
-        b.transfer_next_arrival_ns = b.timer.read();
-    }
-
-    const random = b.rng.random();
-
-    b.batch_transfers.resize(0) catch unreachable;
-    b.transfer_start_ns.resize(0) catch unreachable;
-
-    // Busy-wait for at least one transfer to be available.
-    while (b.transfer_next_arrival_ns >= b.timer.read()) {}
-    b.batch_start_ns = b.timer.read();
-
-    // Fill batch.
-    while (b.transfer_index < b.transfer_count and
-        b.batch_transfers.items.len < transfer_count_per_batch and
-        b.transfer_next_arrival_ns < b.batch_start_ns)
-    {
-        const debit_account_index = random.uintLessThan(u64, b.account_count);
-        var credit_account_index = random.uintLessThan(u64, b.account_count);
-        if (debit_account_index == credit_account_index) {
-            credit_account_index = (credit_account_index + 1) % b.account_count;
+        // Parse account fields
+        if (std.mem.eql(u8, arg[0..2], "id:")) {
+            account.id = try std.fmt.parseInt(u128, arg[3..], 10);
         }
-        assert(debit_account_index != credit_account_index);
-        b.batch_transfers.appendAssumeCapacity(.{
-            // Reverse the bits to stress non-append-only index for `id`.
-            .id = @bitReverse(u128, b.transfer_index + 1),
-            .debit_account_id = @bitReverse(u128, debit_account_index + 1),
-            .credit_account_id = @bitReverse(u128, credit_account_index + 1),
-            .user_data = random.int(u128),
-            .reserved = 0,
-            // TODO Benchmark posting/voiding pending transfers.
-            .pending_id = 0,
-            .timeout = 0,
-            .ledger = 2,
-            .code = random.int(u16) +| 1,
-            .flags = .{},
-            .amount = random_int_exponential(random, u64, 10_000) +| 1,
-            .timestamp = 0,
-        });
-        b.transfer_start_ns.appendAssumeCapacity(b.transfer_next_arrival_ns);
 
-        b.transfer_index += 1;
-        b.transfer_next_arrival_ns += random_int_exponential(random, u64, b.transfer_arrival_rate_ns);
+        if (std.mem.eql(u8, arg[0..9], "user_data:")) {
+            account.user_data = try std.fmt.parseInt(u128, arg[10..], 10);
+        }
+
+        if (std.mem.eql(u8, arg[0..6], "ledger:")) {
+            account.ledger = try std.fmt.parseInt(u32, arg[7..], 10);
+        }
+
+        if (std.mem.eql(u8, arg[0..4], "code:")) {
+            account.code = try std.fmt.parseInt(u16, arg[5..], 10);
+        }
+
+        if (std.mem.eql(u8, arg[0..5], "flags:")) {
+            // TODO: is @bitCast right?
+            account.flags = @bitCast(tb.AccountFlags, try std.fmt.parseInt(u16, arg[6..], 10));
+        }
+
+        if (std.mem.eql(u8, arg[0..14], "debits_pending:")) {
+            account.debits_pending = try std.fmt.parseInt(u64, arg[15..], 10);
+        }
+
+        if (std.mem.eql(u8, arg[0..13], "debits_posted:")) {
+            account.debits_posted = try std.fmt.parseInt(u64, arg[14..], 10);
+        }
+
+        if (std.mem.eql(u8, arg[0..15], "credits_pending:")) {
+            account.credits_pending = try std.fmt.parseInt(u64, arg[16..], 10);
+        }
+
+        if (std.mem.eql(u8, arg[0..14], "credits_posted:")) {
+            account.credits_posted = try std.fmt.parseInt(u64, arg[15..], 10);
+        }
     }
-
-    assert(b.batch_transfers.items.len > 0);
 
     // Submit batch.
-    b.send(
-        create_transfers_finish,
-        .create_transfers,
-        std.mem.sliceAsBytes(b.batch_transfers.items),
+    send(
+        context,
+        .create_accounts,
+        std.mem.sliceAsBytes(batch_accounts.items),
     );
-}
-
-fn create_transfers_finish(b: *Benchmark) void {
-    // Record latencies.
-    const batch_end_ns = b.timer.read();
-    const ms_time = @divTrunc(batch_end_ns - b.batch_start_ns, std.time.ns_per_ms);
-
-    if (b.print_batch_timings) {
-        log.info("batch {}: {} tx in {} ms\n", .{
-            b.batch_index,
-            b.batch_transfers.items.len,
-            ms_time,
-        });
-    }
-
-    b.batch_latency_ns.appendAssumeCapacity(batch_end_ns - b.batch_start_ns);
-    for (b.transfer_start_ns.items) |start_ns| {
-        b.transfer_latency_ns.appendAssumeCapacity(batch_end_ns - start_ns);
-    }
-
-    b.batch_index += 1;
-    b.transfers_sent += b.batch_transfers.items.len;
-
-    if (b.statsd) |statsd| {
-        statsd.gauge("benchmark.txns", b.batch_transfers.items.len) catch {};
-        statsd.timing("benchmark.timings", ms_time) catch {};
-        statsd.gauge("benchmark.batch", b.batch_index) catch {};
-        statsd.gauge("benchmark.completed", b.transfers_sent) catch {};
-    }
-
-    b.create_transfers();
 }
 
 fn send(
-    b: *Benchmark,
-    callback: fn (*Benchmark) void,
+    context: *Context,
     operation: StateMachine.Operation,
     payload: []u8,
 ) void {
-    b.callback = callback;
-    b.message = b.client.get_message();
+    context.message = context.client.get_message();
 
     stdx.copy_disjoint(
         .inexact,
         u8,
-        b.message.?.buffer[@sizeOf(vsr.Header)..],
+        context.message.?.buffer[@sizeOf(vsr.Header)..],
         payload,
     );
 
-    b.client.request(
-        @intCast(u128, @ptrToInt(b)),
+    context.client.request(
+        @intCast(u128, @ptrToInt(context)),
         send_complete,
         operation,
-        b.message.?,
+        context.message.?,
         payload.len,
     );
 }
@@ -315,39 +279,35 @@ fn send_complete(
     operation: StateMachine.Operation,
     result: Client.Error![]const u8,
 ) void {
-    _ = operation;
-
     const result_payload = result catch |err|
         panic("Client returned error: {}", .{err});
 
     switch (operation) {
         .create_accounts => {
-            const create_accounts_results = std.mem.bytesAsSlice(
+            const create_account_results = std.mem.bytesAsSlice(
                 tb.CreateAccountsResult,
                 result_payload,
             );
-            if (create_accounts_results.len > 0) {
-                panic("CreateAccountsResults: {any}", .{create_accounts_results});
+            if (create_account_results.len > 0) {
+                panic("CreateAccountsesults: {any}", .{create_account_results});
             }
         },
-        .create_transfers => {
-            const create_transfers_results = std.mem.bytesAsSlice(
-                tb.CreateTransfersResult,
+        .lookup_accounts => {
+            const lookup_account_results = std.mem.bytesAsSlice(
+                tb.Account,
                 result_payload,
             );
-            if (create_transfers_results.len > 0) {
-                panic("CreateTransfersResults: {any}", .{create_transfers_results});
+            if (lookup_account_results.len > 0) {
+                panic("LookupAccountResults: {any}", .{lookup_account_results});
             }
         },
         else => unreachable,
     }
 
-    const b = @intToPtr(*Benchmark, @intCast(u64, user_data));
+    const context = @intToPtr(*Context, @intCast(u64, user_data));
 
-    b.client.unref(b.message.?);
-    b.message = null;
+    context.client.unref(context.message.?);
+    context.message = null;
 
-    const callback = b.callback.?;
-    b.callback = null;
-    callback(b);
+    context.done = true;
 }
