@@ -43,7 +43,8 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             const allocator = arena.allocator();
 
             var cmd: Command = .none;
-            for (args.items) |arg| {
+            var rest = args.items;
+            for (args.items) |arg, i| {
                 if (arg[0] == '-') {
                     continue;
                 }
@@ -57,6 +58,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 } else if (std.mem.eql(u8, arg, "lookup-transfers")) {
                     cmd = .lookup_transfers;
                 }
+                rest = args.items[i + 1 ..];
 
                 break;
             }
@@ -89,8 +91,8 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             context.client = &client;
 
             switch (cmd) {
-                .create_accounts => try create_account(arena, args, context),
-                .lookup_accounts => try lookup_account(arena, args, context),
+                .create_accounts => try create_accounts(arena, rest, context),
+                .lookup_accounts => try lookup_accounts(arena, rest, context),
                 else => panic("Command not yet implemented.", .{}),
             }
 
@@ -113,45 +115,75 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             out.* = try std.fmt.parseInt(T, arg[name.len + 1 ..], 10);
         }
 
-        fn create_account(
+        fn parse_account_flags(arg: []const u8, flags: *tb.AccountFlags) !void {
+            flags.* = .{};
+
+            if (!(arg.len > 6 and std.mem.eql(u8, arg[0..6], "flags:"))) {
+                return;
+            }
+
+            var parts = std.mem.split(u8, arg[6..], "|");
+            while (parts.next()) |flag| {
+                if (std.mem.eql(u8, flag, "linked")) {
+                    flags.*.linked = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "debits_must_not_exceed_credits")) {
+                    flags.*.debits_must_not_exceed_credits = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "credits_must_not_exceed_debits")) {
+                    flags.*.credits_must_not_exceed_debits = true;
+                    continue;
+                }
+
+                panic("No such account flag: {s}.\n", .{flag});
+            }
+        }
+
+        fn create_accounts(
             arena: *std.heap.ArenaAllocator,
-            args: std.ArrayList([:0]const u8),
+            args: []const [:0]const u8,
             context: *Context,
         ) !void {
             var allocator = arena.allocator();
-            var batch_accounts = try std.ArrayList(tb.Account).initCapacity(allocator, 1);
-            var account = tb.Account{
-                .id = 0,
-                .user_data = 0,
-                .reserved = [_]u8{0} ** 48,
-                .ledger = 0,
-                .code = 0,
-                .flags = .{},
-                .debits_pending = 0,
-                .debits_posted = 0,
-                .credits_pending = 0,
-                .credits_posted = 0,
-            };
+            var batch_accounts = try std.ArrayList(tb.Account).initCapacity(allocator, args.len);
 
-            for (args.items) |arg| {
-                // Parse account fields
-                try parse_arg(u128, "id", arg, &account.id);
-                try parse_arg(u128, "user_data", arg, &account.user_data);
-                try parse_arg(u32, "ledger", arg, &account.ledger);
-                try parse_arg(u16, "code", arg, &account.code);
-                try parse_arg(u64, "debits_pending", arg, &account.debits_pending);
-                try parse_arg(u64, "debits_posted", arg, &account.debits_posted);
-                try parse_arg(u64, "credits_pending", arg, &account.credits_pending);
-                try parse_arg(u64, "credits_posted", arg, &account.credits_posted);
+            for (args) |arg| {
+                var account = tb.Account{
+                    .id = 0,
+                    .user_data = 0,
+                    .reserved = [_]u8{0} ** 48,
+                    .ledger = 0,
+                    .code = 0,
+                    .flags = .{},
+                    .debits_pending = 0,
+                    .debits_posted = 0,
+                    .credits_pending = 0,
+                    .credits_posted = 0,
+                };
 
-                if (arg.len > 6 and std.mem.eql(u8, arg[0..5], "flags:")) {
-                    // TODO: is @bitCast right?
-                    account.flags = @bitCast(tb.AccountFlags, try std.fmt.parseInt(u16, arg[6..], 10));
+                var parts = std.mem.split(u8, arg, " ");
+                while (parts.next()) |part| {
+                    // Parse account fields
+                    try parse_arg(u128, "id", part, &account.id);
+                    try parse_arg(u128, "user_data", part, &account.user_data);
+                    try parse_arg(u32, "ledger", part, &account.ledger);
+                    try parse_arg(u16, "code", part, &account.code);
+                    try parse_arg(u64, "debits_pending", part, &account.debits_pending);
+                    try parse_arg(u64, "debits_posted", part, &account.debits_posted);
+                    try parse_arg(u64, "credits_pending", part, &account.credits_pending);
+                    try parse_arg(u64, "credits_posted", part, &account.credits_posted);
+
+                    try parse_account_flags(part, &account.flags);
                 }
+
+                batch_accounts.appendAssumeCapacity(account);
             }
 
-            batch_accounts.appendAssumeCapacity(account);
-            assert(batch_accounts.items.len == 1);
+            assert(batch_accounts.items.len == args.len);
 
             // Submit batch.
             send(
@@ -161,15 +193,15 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
-        fn lookup_account(
+        fn lookup_accounts(
             arena: *std.heap.ArenaAllocator,
-            args: std.ArrayList([:0]const u8),
+            args: []const [:0]const u8,
             context: *Context,
         ) !void {
             var allocator = arena.allocator();
             var account_ids = try std.ArrayList(u128).initCapacity(allocator, 1);
 
-            for (args.items) |arg| {
+            for (args) |arg| {
                 var id: u128 = 0;
                 try parse_arg(u128, "id", arg, &id);
                 try account_ids.append(id);
@@ -210,6 +242,30 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
+        fn display_account_flags(flags: tb.AccountFlags) !void {
+            const stdout = std.io.getStdOut().writer();
+
+            if (flags.linked) {
+                try stdout.print("linked", .{});
+            }
+
+            if (flags.debits_must_not_exceed_credits) {
+                if (flags.linked) {
+                    try stdout.print("|", .{});
+                }
+
+                try stdout.print("debits_must_not_exceed_credits", .{});
+            }
+
+            if (flags.credits_must_not_exceed_debits) {
+                if (flags.linked or flags.debits_must_not_exceed_credits) {
+                    try stdout.print("|", .{});
+                }
+
+                try stdout.print("credits_must_not_exceed_debits", .{});
+            }
+        }
+
         fn display_accounts(accounts: []align(1) const tb.Account) void {
             const stdout = std.io.getStdOut().writer();
 
@@ -220,24 +276,45 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     \\  "user_data":       "{}",
                     \\  "ledger":          "{}",
                     \\  "code":            "{}",
-                    \\  "flags":           "{}",
-                    \\  "debits_pending":  "{}",
-                    \\  "debits_posted":   "{}",
-                    \\  "credits_pending": "{}",
-                    \\  "credits_posted":  "{}"
-                    \\}}
+                    \\  "flags":           "
                 , .{
                     account.id,
                     account.user_data,
                     account.ledger,
                     account.code,
-                    account.flags,
+                }) catch unreachable;
+
+                display_account_flags(account.flags) catch unreachable;
+
+                stdout.print("\",\n", .{}) catch unreachable;
+
+                stdout.print(
+                    \\  "debits_pending":  "{}",
+                    \\  "debits_posted":   "{}",
+                    \\  "credits_pending": "{}",
+                    \\  "credits_posted":  "{}"
+                    \\}}
+                    \\
+                , .{
                     account.debits_pending,
                     account.debits_posted,
                     account.credits_pending,
                     account.credits_posted,
                 }) catch unreachable;
             }
+        }
+
+        fn display_account_result_errors(errors: []align(1) const tb.CreateAccountsResult) void {
+            const stdout = std.io.getStdOut().writer();
+
+            for (errors) |reason| {
+                stdout.print(
+                    "Failed to create account ({}): {any}.\n",
+                    .{ reason.index, reason.result },
+                ) catch unreachable;
+            }
+
+            stdout.print("Not ok.\n", .{}) catch unreachable;
         }
 
         fn send_complete(
@@ -254,11 +331,12 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                         tb.CreateAccountsResult,
                         result_payload,
                     );
-                    if (create_account_results.len > 0) {
-                        panic("CreateAccountsResults: {any}", .{create_account_results});
-                    }
 
-                    std.debug.print("Ok!\n", .{});
+                    if (create_account_results.len == 0) {
+                        std.debug.print("Ok!\n", .{});
+                    } else {
+                        display_account_result_errors(create_account_results);
+                    }
                 },
                 .lookup_accounts => {
                     const lookup_account_results = std.mem.bytesAsSlice(
