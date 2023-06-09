@@ -47,7 +47,7 @@ const alloc_block = @import("grid.zig").alloc_block;
 const TableInfoType = @import("manifest.zig").TableInfoType;
 const ManifestType = @import("manifest.zig").ManifestType;
 const TableDataIteratorType = @import("table_data_iterator.zig").TableDataIteratorType;
-const LevelDataIteratorType = @import("level_data_iterator.zig").LevelDataIteratorType;
+const LevelIteratorType = @import("level_iterator.zig").LevelIteratorType;
 
 pub fn CompactionType(
     comptime Table: type,
@@ -65,7 +65,7 @@ pub fn CompactionType(
         const Manifest = ManifestType(Table, Storage);
         const CompactionRange = Manifest.CompactionRange;
         const TableDataIterator = TableDataIteratorType(Storage);
-        const LevelDataIterator = LevelDataIteratorType(Table, Storage);
+        const LevelIterator = LevelIteratorType(Table, Storage);
 
         const Key = Table.Key;
         const Value = Table.Value;
@@ -105,8 +105,8 @@ pub fn CompactionType(
 
         // Allocated during `init`.
         iterator_a: TableDataIterator,
-        iterator_b: LevelDataIterator,
-        index_block_a: BlockPtr,
+        iterator_b: LevelIterator,
+        index_blocks: [2]BlockPtr,
         data_blocks: [2]BlockPtr,
         table_builder: Table.Builder,
         last_keys_in: [2]?Key = .{ null, null },
@@ -166,14 +166,12 @@ pub fn CompactionType(
         iterator_tracer_slot: ?tracer.SpanStart,
 
         pub fn init(allocator: Allocator, tree_name: []const u8) !Compaction {
-            var iterator_a = try TableDataIterator.init(allocator);
-            errdefer iterator_a.deinit(allocator);
+            var index_blocks: [2]Grid.BlockPtr = undefined;
+            index_blocks[0] = try alloc_block(allocator);
+            errdefer allocator.free(index_blocks[0]);
 
-            var iterator_b = try LevelDataIterator.init(allocator);
-            errdefer iterator_b.deinit(allocator);
-
-            const index_block_a = try alloc_block(allocator);
-            errdefer allocator.free(index_block_a);
+            index_blocks[1] = try alloc_block(allocator);
+            errdefer allocator.free(index_blocks[1]);
 
             var data_blocks: [2]Grid.BlockPtr = undefined;
 
@@ -189,9 +187,9 @@ pub fn CompactionType(
             return Compaction{
                 .tree_name = tree_name,
 
-                .iterator_a = iterator_a,
-                .iterator_b = iterator_b,
-                .index_block_a = index_block_a,
+                .iterator_a = TableDataIterator.init(),
+                .iterator_b = LevelIterator.init(),
+                .index_blocks = index_blocks,
                 .data_blocks = data_blocks,
                 .table_builder = table_builder,
 
@@ -212,9 +210,7 @@ pub fn CompactionType(
         pub fn deinit(compaction: *Compaction, allocator: Allocator) void {
             compaction.table_builder.deinit(allocator);
             for (compaction.data_blocks) |data_block| allocator.free(data_block);
-            allocator.free(compaction.index_block_a);
-            compaction.iterator_b.deinit(allocator);
-            compaction.iterator_a.deinit(allocator);
+            for (compaction.index_blocks) |index_block| allocator.free(index_block);
         }
 
         pub fn reset(compaction: *Compaction) void {
@@ -284,7 +280,7 @@ pub fn CompactionType(
 
                 .iterator_a = compaction.iterator_a,
                 .iterator_b = compaction.iterator_b,
-                .index_block_a = compaction.index_block_a,
+                .index_blocks = compaction.index_blocks,
                 .data_blocks = compaction.data_blocks,
                 .table_builder = compaction.table_builder,
 
@@ -328,14 +324,18 @@ pub fn CompactionType(
                     .{ compaction.tree_name, context.level_b },
                 );
 
-                compaction.iterator_b.start(.{
-                    .grid = context.grid,
-                    .manifest = &context.tree.manifest,
-                    .level = context.level_b,
-                    .snapshot = context.op_min,
-                    .key_min = context.range_b.key_min,
-                    .key_max = context.range_b.key_max,
-                });
+                compaction.iterator_b.start(
+                    .{
+                        .grid = context.grid,
+                        .manifest = &context.tree.manifest,
+                        .level = context.level_b,
+                        .snapshot = context.op_min,
+                        .key_min = context.range_b.key_min,
+                        .key_max = context.range_b.key_max,
+                        .direction = .ascending,
+                    },
+                    compaction.index_blocks[1],
+                );
 
                 switch (context.table_info_a) {
                     .immutable => |values| {
@@ -362,11 +362,11 @@ pub fn CompactionType(
 
             // `index_block` is only valid for this callback, so copy its contents.
             // TODO(jamii) This copy can be avoided if we bypass the cache.
-            stdx.copy_disjoint(.exact, u8, compaction.index_block_a, index_block);
+            stdx.copy_disjoint(.exact, u8, compaction.index_blocks[0], index_block);
             compaction.iterator_a.start(.{
                 .grid = compaction.context.grid,
-                .addresses = Table.index_data_addresses_used(compaction.index_block_a),
-                .checksums = Table.index_data_checksums_used(compaction.index_block_a),
+                .addresses = Table.index_data_addresses_used(compaction.index_blocks[0]),
+                .checksums = Table.index_data_checksums_used(compaction.index_blocks[0]),
             });
 
             compaction.state = .compacting;
@@ -411,10 +411,10 @@ pub fn CompactionType(
         }
 
         fn on_index_block(
-            iterator_b: *LevelDataIterator,
+            iterator_b: *LevelIterator,
             table_info: TableInfo,
             index_block: BlockPtrConst,
-        ) void {
+        ) LevelIterator.IndexFilter {
             const compaction = @fieldParentPtr(Compaction, "iterator_b", iterator_b);
             assert(std.meta.eql(compaction.state, .{ .iterator_next = .b }));
 
@@ -434,6 +434,9 @@ pub fn CompactionType(
                 grid.release(address);
             }
             grid.release(Table.index_block_address(index_block));
+
+            // For compacion we want all data blocks from these tables.
+            return .include;
         }
 
         fn iterator_next_a(iterator_a: *TableDataIterator, data_block: ?BlockPtrConst) void {
@@ -442,7 +445,7 @@ pub fn CompactionType(
             compaction.iterator_next(data_block);
         }
 
-        fn iterator_next_b(iterator_b: *LevelDataIterator, data_block: ?BlockPtrConst) void {
+        fn iterator_next_b(iterator_b: *LevelIterator, data_block: ?BlockPtrConst) void {
             const compaction = @fieldParentPtr(Compaction, "iterator_b", iterator_b);
             assert(std.meta.eql(compaction.state, .{ .iterator_next = .b }));
             compaction.iterator_next(data_block);

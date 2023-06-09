@@ -37,8 +37,7 @@ pub fn TableDataIteratorType(comptime Storage: type) type {
         read: Grid.Read,
         next_tick: Grid.NextTick,
 
-        pub fn init(allocator: mem.Allocator) !TableDataIterator {
-            _ = allocator; // TODO(jamii) Will need this soon for pipelining.
+        pub fn init() TableDataIterator {
             return TableDataIterator{
                 .context = .{
                     .grid = undefined,
@@ -52,11 +51,6 @@ pub fn TableDataIteratorType(comptime Storage: type) type {
                 .read = undefined,
                 .next_tick = undefined,
             };
-        }
-
-        pub fn deinit(it: *TableDataIterator, allocator: mem.Allocator) void {
-            _ = allocator; // TODO(jamii) Will need this soon for pipelining.
-            it.* = undefined;
         }
 
         pub fn start(
