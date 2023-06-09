@@ -210,6 +210,36 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
+        fn display_accounts(accounts: []align(1) const tb.Account) void {
+            const stdout = std.io.getStdOut().writer();
+
+            for (accounts) |account| {
+                stdout.print(
+                    \\{{
+                    \\  "id":              "{}",
+                    \\  "user_data":       "{}",
+                    \\  "ledger":          "{}",
+                    \\  "code":            "{}",
+                    \\  "flags":           "{}",
+                    \\  "debits_pending":  "{}",
+                    \\  "debits_posted":   "{}",
+                    \\  "credits_pending": "{}",
+                    \\  "credits_posted":  "{}"
+                    \\}}
+                , .{
+                    account.id,
+                    account.user_data,
+                    account.ledger,
+                    account.code,
+                    account.flags,
+                    account.debits_pending,
+                    account.debits_posted,
+                    account.credits_pending,
+                    account.credits_posted,
+                }) catch unreachable;
+            }
+        }
+
         fn send_complete(
             user_data: u128,
             operation: StateMachine.Operation,
@@ -240,7 +270,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                         panic("No such account exists.\n", .{});
                     }
 
-                    std.debug.print("{any}", .{lookup_account_results});
+                    display_accounts(lookup_account_results);
                 },
                 else => unreachable,
             }
