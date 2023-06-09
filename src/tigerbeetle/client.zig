@@ -93,6 +93,8 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             switch (cmd) {
                 .create_accounts => try create_accounts(arena, rest, context),
                 .lookup_accounts => try lookup_accounts(arena, rest, context),
+                .create_transfers => try create_transfers(arena, rest, context),
+                .lookup_transfers => try lookup_transfers(arena, rest, context),
                 else => panic("Command not yet implemented.", .{}),
             }
 
@@ -208,7 +210,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             }
 
             if (account_ids.items.len == 0) {
-                panic("Must pass at least one id. For example: `cli lookup-account id:12`.", .{});
+                panic("Must pass at least one id. For example: `cli lookup-accounts id:12`.", .{});
             }
 
             // Submit batch.
@@ -216,6 +218,128 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 context,
                 .lookup_accounts,
                 std.mem.sliceAsBytes(account_ids.items),
+            );
+        }
+
+        fn parse_transfer_flags(arg: []const u8, flags: *tb.TransferFlags) !void {
+            flags.* = .{};
+
+            if (!(arg.len > 6 and std.mem.eql(u8, arg[0..6], "flags:"))) {
+                return;
+            }
+
+            var parts = std.mem.split(u8, arg[6..], "|");
+            while (parts.next()) |flag| {
+                if (std.mem.eql(u8, flag, "linked")) {
+                    flags.*.linked = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "pending")) {
+                    flags.*.pending = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "post_pending_transfer")) {
+                    flags.*.post_pending_transfer = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "void_pending_transfer")) {
+                    flags.*.void_pending_transfer = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "balancing_debit")) {
+                    flags.*.balancing_debit = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "balancing_credit")) {
+                    flags.*.balancing_credit = true;
+                    continue;
+                }
+
+                panic("No such transfer flag: {s}.\n", .{flag});
+            }
+        }
+
+        fn create_transfers(
+            arena: *std.heap.ArenaAllocator,
+            args: []const [:0]const u8,
+            context: *Context,
+        ) !void {
+            var allocator = arena.allocator();
+            var batch_transfers = try std.ArrayList(tb.Transfer).initCapacity(allocator, args.len);
+
+            for (args) |arg| {
+                var transfer = tb.Transfer{
+                    .id = 0,
+                    .debit_account_id = 0,
+                    .credit_account_id = 0,
+                    .user_data = 0,
+                    .reserved = 0,
+                    .pending_id = 0,
+                    .timeout = 0,
+                    .ledger = 0,
+                    .code = 0,
+                    .flags = .{},
+                    .amount = 0,
+                    .timestamp = 0,
+                };
+
+                var parts = std.mem.split(u8, arg, " ");
+                while (parts.next()) |part| {
+                    // Parse transfer fields
+                    try parse_arg(u128, "id", part, &transfer.id);
+                    try parse_arg(u128, "debit_account_id", part, &transfer.debit_account_id);
+                    try parse_arg(u128, "credit_account_id", part, &transfer.credit_account_id);
+                    try parse_arg(u128, "user_data", part, &transfer.user_data);
+                    try parse_arg(u128, "pending_id", part, &transfer.pending_id);
+                    try parse_arg(u64, "timeout", part, &transfer.timeout);
+                    try parse_arg(u32, "ledger", part, &transfer.ledger);
+                    try parse_arg(u16, "code", part, &transfer.code);
+                    try parse_arg(u64, "amount", part, &transfer.amount);
+
+                    try parse_transfer_flags(part, &transfer.flags);
+                }
+
+                batch_transfers.appendAssumeCapacity(transfer);
+            }
+
+            assert(batch_transfers.items.len == args.len);
+
+            // Submit batch.
+            send(
+                context,
+                .create_transfers,
+                std.mem.sliceAsBytes(batch_transfers.items),
+            );
+        }
+
+        fn lookup_transfers(
+            arena: *std.heap.ArenaAllocator,
+            args: []const [:0]const u8,
+            context: *Context,
+        ) !void {
+            var allocator = arena.allocator();
+            var transfer_ids = try std.ArrayList(u128).initCapacity(allocator, 1);
+
+            for (args) |arg| {
+                var id: u128 = 0;
+                try parse_arg(u128, "id", arg, &id);
+                try transfer_ids.append(id);
+            }
+
+            if (transfer_ids.items.len == 0) {
+                panic("Must pass at least one id. For example: `cli lookup-transfers id:12`.", .{});
+            }
+
+            // Submit batch.
+            send(
+                context,
+                .lookup_transfers,
+                std.mem.sliceAsBytes(transfer_ids.items),
             );
         }
 
@@ -313,8 +437,116 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     .{ reason.index, reason.result },
                 ) catch unreachable;
             }
+        }
 
-            stdout.print("Not ok.\n", .{}) catch unreachable;
+        fn display_transfer_flags(flags: tb.TransferFlags) !void {
+            const stdout = std.io.getStdOut().writer();
+
+            if (flags.linked) {
+                try stdout.print("linked", .{});
+            }
+
+            if (flags.pending) {
+                if (flags.linked) {
+                    try stdout.print("|", .{});
+                }
+
+                try stdout.print("pending", .{});
+            }
+
+            if (flags.post_pending_transfer) {
+                if (flags.linked or flags.pending) {
+                    try stdout.print("|", .{});
+                }
+
+                try stdout.print("post_pending_transfer", .{});
+            }
+
+            if (flags.void_pending_transfer) {
+                if (flags.linked or flags.pending or flags.post_pending_transfer) {
+                    try stdout.print("|", .{});
+                }
+
+                try stdout.print("void_pending_transfer", .{});
+            }
+
+            if (flags.balancing_debit) {
+                if (flags.linked or
+                    flags.pending or
+                    flags.post_pending_transfer or
+                    flags.void_pending_transfer)
+                {
+                    try stdout.print("|", .{});
+                }
+
+                try stdout.print("balancing_debit", .{});
+            }
+
+            if (flags.balancing_credit) {
+                if (flags.linked or
+                    flags.pending or
+                    flags.post_pending_transfer or
+                    flags.void_pending_transfer or
+                    flags.balancing_debit)
+                {
+                    try stdout.print("|", .{});
+                }
+
+                try stdout.print("balancing_credit", .{});
+            }
+        }
+
+        fn display_transfers(transfers: []align(1) const tb.Transfer) void {
+            const stdout = std.io.getStdOut().writer();
+
+            for (transfers) |transfer| {
+                stdout.print(
+                    \\{{
+                    \\  "id":                "{}",
+                    \\  "debit_account_id":  "{}",
+                    \\  "credit_account_id": "{}",
+                    \\  "user_data":         "{}",
+                    \\  "pending_id":        "{}",
+                    \\  "timeout":           "{}",
+                    \\  "ledger":            "{}",
+                    \\  "code":              "{}",
+                    \\  "flags":             "
+                , .{
+                    transfer.id,
+                    transfer.debit_account_id,
+                    transfer.credit_account_id,
+                    transfer.user_data,
+                    transfer.pending_id,
+                    transfer.timeout,
+                    transfer.ledger,
+                    transfer.code,
+                }) catch unreachable;
+
+                display_transfer_flags(transfer.flags) catch unreachable;
+
+                stdout.print("\",\n", .{}) catch unreachable;
+
+                stdout.print(
+                    \\  "amount":            "{}",
+                    \\  "timestamp":         "{}",
+                    \\}}
+                    \\
+                , .{
+                    transfer.amount,
+                    transfer.timestamp,
+                }) catch unreachable;
+            }
+        }
+
+        fn display_transfer_result_errors(errors: []align(1) const tb.CreateTransfersResult) void {
+            const stdout = std.io.getStdOut().writer();
+
+            for (errors) |reason| {
+                stdout.print(
+                    "Failed to create transfer ({}): {any}.\n",
+                    .{ reason.index, reason.result },
+                ) catch unreachable;
+            }
         }
 
         fn send_complete(
@@ -332,9 +564,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                         result_payload,
                     );
 
-                    if (create_account_results.len == 0) {
-                        std.debug.print("Ok!\n", .{});
-                    } else {
+                    if (create_account_results.len > 0) {
                         display_account_result_errors(create_account_results);
                     }
                 },
@@ -349,6 +579,28 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     }
 
                     display_accounts(lookup_account_results);
+                },
+                .create_transfers => {
+                    const create_transfer_results = std.mem.bytesAsSlice(
+                        tb.CreateTransfersResult,
+                        result_payload,
+                    );
+
+                    if (create_transfer_results.len > 0) {
+                        display_transfer_result_errors(create_transfer_results);
+                    }
+                },
+                .lookup_transfers => {
+                    const lookup_transfer_results = std.mem.bytesAsSlice(
+                        tb.Transfer,
+                        result_payload,
+                    );
+
+                    if (lookup_transfer_results.len == 0) {
+                        panic("No such transfer exists.\n", .{});
+                    }
+
+                    display_transfers(lookup_transfer_results);
                 },
                 else => unreachable,
             }
