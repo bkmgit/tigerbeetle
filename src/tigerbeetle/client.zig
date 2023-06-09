@@ -23,6 +23,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
         const Context = struct {
             done: bool,
+            repl: bool,
             client: *Client,
             message: ?*MessagePool.Message,
         };
@@ -35,6 +36,105 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             lookup_transfers,
         };
 
+        fn match_command(arg: []const u8) Command {
+            if (std.mem.eql(u8, arg, "create-accounts")) {
+                return .create_accounts;
+            } else if (std.mem.eql(u8, arg, "lookup-accounts")) {
+                return .lookup_accounts;
+            } else if (std.mem.eql(u8, arg, "create-transfers")) {
+                return .create_transfers;
+            } else if (std.mem.eql(u8, arg, "lookup-transfers")) {
+                return .lookup_transfers;
+            }
+
+            panic("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers.\n", .{});
+        }
+
+        fn do_command(
+            arena: *std.heap.ArenaAllocator,
+            rest: []const [:0]const u8,
+            context: *Context,
+            cmd: Command,
+        ) !void {
+            switch (cmd) {
+                .create_accounts => try create_accounts(arena, rest, context),
+                .lookup_accounts => try lookup_accounts(arena, rest, context),
+                .create_transfers => try create_transfers(arena, rest, context),
+                .lookup_transfers => try lookup_transfers(arena, rest, context),
+                else => panic("Command not yet implemented.", .{}),
+            }
+        }
+
+        fn repl(
+            arena: *std.heap.ArenaAllocator,
+            context: *Context,
+        ) !void {
+            const stdout = std.io.getStdOut().writer();
+
+            var done = false;
+            while (!done) {
+                try stdout.print("> ", .{});
+
+                const in = std.io.getStdIn();
+                var stream = std.io.bufferedReader(in.reader()).reader();
+
+                var input = std.ArrayList(u8).init(arena.allocator());
+                var buf: [4096]u8 = undefined;
+
+                if (stream.readUntilDelimiterOrEof(&buf, ';')) |bytes| {
+                    if (bytes) |b| {
+                        try input.appendSlice(b);
+                    }
+                } else |err| {
+                    done = true;
+                    context.done = true;
+                    return err;
+                }
+
+                var cmd: Command = .none;
+                var args = std.ArrayList([:0]const u8).init(arena.allocator());
+                var current_arg = std.ArrayList(u8).init(arena.allocator());
+                var in_arg = false;
+
+                for (input.items) |c, i| {
+                    if (c == ' ' and cmd == .none) {
+                        cmd = match_command(input.items[0..i]);
+                    }
+
+                    if (cmd != .none) {
+                        if (c == '"') {
+                            // Done one arg, start another
+                            if (in_arg) {
+                                try args.append(current_arg.items[0.. :0]);
+                                // Reset the current arg.
+                                current_arg.clearRetainingCapacity();
+                                in_arg = false;
+
+                                // Skip current "
+                                continue;
+                            } else {
+                                in_arg = true;
+
+                                // Skip current "
+                                continue;
+                            }
+                        }
+                    }
+
+                    if (in_arg) {
+                        try current_arg.append(c);
+                    }
+                }
+
+                try do_command(
+                    arena,
+                    args.items,
+                    context,
+                    cmd,
+                );
+            }
+        }
+
         pub fn run(
             arena: *std.heap.ArenaAllocator,
             args: std.ArrayList([:0]const u8),
@@ -44,27 +144,21 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             var cmd: Command = .none;
             var rest = args.items;
+            var interactive = false;
+
             for (args.items) |arg, i| {
                 if (arg[0] == '-') {
                     continue;
                 }
 
-                if (std.mem.eql(u8, arg, "create-accounts")) {
-                    cmd = .create_accounts;
-                } else if (std.mem.eql(u8, arg, "lookup-accounts")) {
-                    cmd = .lookup_accounts;
-                } else if (std.mem.eql(u8, arg, "create-transfers")) {
-                    cmd = .create_transfers;
-                } else if (std.mem.eql(u8, arg, "lookup-transfers")) {
-                    cmd = .lookup_transfers;
+                if (std.mem.eql(u8, arg, "repl")) {
+                    interactive = true;
+                } else {
+                    cmd = match_command(arg);
                 }
                 rest = args.items[i + 1 ..];
 
                 break;
-            }
-
-            if (cmd == .none) {
-                panic("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers.\n", .{});
             }
 
             var context = try allocator.create(Context);
@@ -90,12 +184,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
             context.client = &client;
 
-            switch (cmd) {
-                .create_accounts => try create_accounts(arena, rest, context),
-                .lookup_accounts => try lookup_accounts(arena, rest, context),
-                .create_transfers => try create_transfers(arena, rest, context),
-                .lookup_transfers => try lookup_transfers(arena, rest, context),
-                else => panic("Command not yet implemented.", .{}),
+            if (interactive) {
+                context.repl = true;
+                try repl(arena, context);
+            } else {
+                try do_command(arena, rest, context, cmd);
             }
 
             while (!context.done) {
@@ -610,7 +703,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             context.client.unref(context.message.?);
             context.message = null;
 
-            context.done = true;
+            if (!context.repl) {
+                context.done = true;
+            }
         }
     };
 }
