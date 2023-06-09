@@ -13,6 +13,8 @@ const constants = vsr.constants;
 const config = vsr.config.configs.current;
 const tracer = vsr.tracer;
 
+const client_ = @import("client.zig");
+
 const cli = @import("cli.zig");
 const fatal = cli.fatal;
 
@@ -54,6 +56,7 @@ pub fn main() !void {
         }, args.path),
         .start => |*args| try Command.start(&arena, args),
         .version => |*args| try Command.version(allocator, args.verbose),
+        .client => |*args| try Command.client(&arena, args),
     }
 }
 
@@ -264,6 +267,11 @@ const Command = struct {
             }
         }
         try stdout_buffer.flush();
+    }
+
+    pub fn client(arena: *std.heap.ArenaAllocator, args: *const cli.Command.Client) !void {
+        const Client = client_.ClientType(StateMachine, vsr.message_bus.MessageBusClient);
+        try Client.run(arena, args.args_allocated, args.addresses);
     }
 };
 

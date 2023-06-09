@@ -121,19 +121,6 @@ pub fn build(b: *std.build.Builder) void {
         run_step.dependOn(&run_cmd.step);
     }
 
-    {
-        const cli = b.addExecutable("cli", "src/cli.zig");
-        cli.setBuildMode(mode);
-        cli.setTarget(target);
-        cli.install();
-        cli.addOptions("vsr_options", options);
-
-        var install_step = b.addInstallArtifact(cli);
-
-        const cli_build = b.step("cli", "Build TigerBeetle CLI");
-        cli_build.dependOn(&install_step.step);
-    }
-
     // Linting targets
     // We currently have: lint_zig_fmt, lint_tigerstyle, lint_shellcheck, lint_validate_docs.
     // The meta-target lint runs them all

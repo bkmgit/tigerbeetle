@@ -30,6 +30,8 @@ const usage = fmt.comptimePrint(
     \\
     \\  tigerbeetle version [--version]
     \\
+    \\  tigerbeetle client --addresses=<addressess> lookup_accounts|create_accounts|lookup_transfers|create_transfers [-h | --help]
+    \\
     \\Commands:
     \\
     \\  format   Create a TigerBeetle replica data file at <path>.
@@ -39,6 +41,9 @@ const usage = fmt.comptimePrint(
     \\  start    Run a TigerBeetle replica from the data file at <path>.
     \\
     \\  version  Print the TigerBeetle build version and the compile-time config values.
+    \\
+    \\  client   Run commands against a TigerBeetle cluster. See
+    \\           `tigerbeetle client --help` for more information.
     \\
     \\Options:
     \\
@@ -105,6 +110,11 @@ pub const Command = union(enum) {
         path: [:0]const u8,
     };
 
+    pub const Client = struct {
+        args_allocated: std.ArrayList([:0]const u8),
+        addresses: []net.Address,
+    };
+
     format: struct {
         args_allocated: std.ArrayList([:0]const u8),
         cluster: u32,
@@ -117,10 +127,13 @@ pub const Command = union(enum) {
         verbose: bool,
     },
 
+    client: Client,
+
     pub fn deinit(command: Command, allocator: std.mem.Allocator) void {
         var args_allocated = switch (command) {
             .format => |cmd| cmd.args_allocated,
             .start => |cmd| cmd.args_allocated,
+            .client => |cmd| cmd.args_allocated,
             .version => return,
         };
 
@@ -164,7 +177,7 @@ pub fn parse_args(allocator: std.mem.Allocator) !Command {
         os.exit(0);
     }
     const command = meta.stringToEnum(meta.Tag(Command), raw_command) orelse
-        fatal("unknown command '{s}', expected 'start', 'format', or 'version'", .{raw_command});
+        fatal("unknown command '{s}', expected 'start', 'format', 'client', or 'version'", .{raw_command});
 
     while (args.next(allocator)) |parsed_arg| {
         const arg = try parsed_arg;
@@ -180,7 +193,7 @@ pub fn parse_args(allocator: std.mem.Allocator) !Command {
             if (command != .format) fatal("--replica: supported only by 'format' command", .{});
             replica = parse_flag("--replica", arg);
         } else if (mem.startsWith(u8, arg, "--addresses")) {
-            if (command != .start) fatal("--addresses: supported only by 'start' command", .{});
+            if (command != .start and command != .client) fatal("--addresses: supported only by 'start' and 'client' commands", .{});
             addresses = parse_flag("--addresses", arg);
         } else if (mem.startsWith(u8, arg, "--cache-accounts")) {
             if (command != .start) fatal("--cache-accounts: supported only by 'start' command", .{});
@@ -205,11 +218,13 @@ pub fn parse_args(allocator: std.mem.Allocator) !Command {
             os.exit(0);
         } else if (mem.startsWith(u8, arg, "-")) {
             fatal("unexpected argument: '{s}'", .{arg});
-        } else if (path == null) {
+        } else if (path == null and command != .client) {
             if (!(command == .format or command == .start)) fatal("unexpected path", .{});
             path = arg;
         } else {
-            fatal("unexpected argument: '{s}' (must start with '--')", .{arg});
+            if (command != .client) {
+                fatal("unexpected argument: '{s}' (must start with '--')", .{arg});
+            }
         }
     }
 
@@ -275,6 +290,17 @@ pub fn parse_args(allocator: std.mem.Allocator) !Command {
                         constants.grid_cache_size_default,
                     ),
                     .path = path orelse fatal("required: <path>", .{}),
+                },
+            };
+        },
+        .client => {
+            return Command{
+                .client = .{
+                    .args_allocated = args_allocated,
+                    .addresses = parse_addresses(
+                        allocator,
+                        addresses orelse fatal("required: --addresses", .{}),
+                    ),
                 },
             };
         },
