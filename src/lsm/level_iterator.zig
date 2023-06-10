@@ -15,7 +15,7 @@ const TableDataIteratorType = @import("table_data_iterator.zig").TableDataIterat
 /// A LevelIterator iterates the data blocks of every table in a key range in ascending key order.
 pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
     return struct {
-        const LevelDataIterator = @This();
+        const LevelIterator = @This();
 
         const Key = Table.Key;
         const Grid = GridType(Storage);
@@ -44,7 +44,7 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
             ) void;
 
             /// Passed by `start`.
-            context: Context,
+            context: *const Context,
 
             /// The key_max (when .ascending) or key_min (when .descending) of the last table iterated.
             /// Used to get the next table from the manifest.
@@ -70,7 +70,7 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
                 };
             }
 
-            pub fn start(it: *LevelIndexIterator, context: Context) void {
+            pub fn start(it: *LevelIndexIterator, context: *const Context) void {
                 assert(it.callback == .none);
                 if (context.direction == .descending) {
                     @panic("TODO Implement descending direction for LevelIndexIterator.");
@@ -146,11 +146,11 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
 
         pub const IndexFilter = enum { include, exclude };
         pub const IndexCallback = fn (
-            it: *LevelDataIterator,
+            it: *LevelIterator,
             table_info: TableInfo,
             index_block: BlockPtrConst,
         ) IndexFilter;
-        pub const DataCallback = fn (it: *LevelDataIterator, data_block: ?BlockPtrConst) void;
+        pub const DataCallback = fn (it: *LevelIterator, data_block: ?BlockPtrConst) void;
         pub const Callback = struct {
             on_index: IndexCallback,
             on_data: DataCallback,
@@ -169,12 +169,12 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
 
         callback: union(enum) {
             none,
-            level_next: Callback,
-            table_next: Callback,
+            level_index_next: Callback,
+            table_data_next: Callback,
         },
 
-        pub fn init() LevelDataIterator {
-            return LevelDataIterator{
+        pub fn init() LevelIterator {
+            return .{
                 .context = undefined,
                 .level_index_iterator = LevelIndexIterator.init(),
                 .table_data_iterator = TableDataIterator.init(),
@@ -184,7 +184,7 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
         }
 
         pub fn start(
-            it: *LevelDataIterator,
+            it: *LevelIterator,
             context: Context,
             index_block_buffer: BlockPtr,
         ) void {
@@ -196,7 +196,7 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
                 .index_block = index_block_buffer,
                 .callback = .none,
             };
-            it.level_index_iterator.start(context);
+            it.level_index_iterator.start(&it.context);
             it.table_data_iterator.start(.{
                 .grid = context.grid,
                 .addresses = &.{},
@@ -212,68 +212,75 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
         /// or with null if there are no more data blocks in the range.
         ///
         /// For both callbacks, the block is only valid for the duration of the callback.
-        pub fn next(it: *LevelDataIterator, callback: Callback) void {
+        pub fn next(it: *LevelIterator, callback: Callback) void {
             assert(it.callback == .none);
 
             if (it.table_data_iterator.empty()) {
                 // Refill `table_data_iterator` before calling `table_next`.
-                it.callback = .{ .level_next = callback };
-                it.level_index_iterator.next(on_level_next);
+                it.level_index_next(callback);
             } else {
-                it.table_next(callback);
+                it.table_data_next(callback);
             }
         }
 
-        fn on_level_next(
+        inline fn level_index_next(it: *LevelIterator, callback: Callback) void {
+            assert(it.callback == .none);
+
+            it.callback = .{ .level_index_next = callback };
+            it.level_index_iterator.next(on_level_index_next);
+        }
+
+        fn on_level_index_next(
             level_index_iterator: *LevelIndexIterator,
             table_info: ?TableInfo,
             index_block: ?BlockPtrConst,
         ) void {
             const it = @fieldParentPtr(
-                LevelDataIterator,
+                LevelIterator,
                 "level_index_iterator",
                 level_index_iterator,
             );
             assert(it.table_data_iterator.empty());
-            const callback = it.callback.level_next;
+            const callback = it.callback.level_index_next;
             it.callback = .none;
 
             if (index_block) |block| {
-                // `index_block` is only valid for this callback, so copy it's contents.
-                // TODO(jamii) This copy can be avoided if we bypass the cache.
-                stdx.copy_disjoint(.exact, u8, it.index_block, block);
-
                 const index_filter = callback.on_index(it, table_info.?, block);
                 switch (index_filter) {
-                    .include => it.table_data_iterator.start(.{
-                        .grid = it.context.grid,
-                        .addresses = Table.index_data_addresses_used(it.index_block),
-                        .checksums = Table.index_data_checksums_used(it.index_block),
-                    }),
+                    .include => {
+                        // `index_block` is only valid for this callback, so copy it's contents.
+                        // TODO(jamii) This copy can be avoided if we bypass the cache.
+                        stdx.copy_disjoint(.exact, u8, it.index_block, block);
+
+                        it.table_data_iterator.start(.{
+                            .grid = it.context.grid,
+                            .addresses = Table.index_data_addresses_used(it.index_block),
+                            .checksums = Table.index_data_checksums_used(it.index_block),
+                        });
+
+                        it.table_data_next(callback);
+                    },
                     .exclude => {
                         // Skip this data block and load the next index block.
-                        it.callback = .{ .level_next = callback };
-                        it.level_index_iterator.next(on_level_next);
-                        return;
+                        it.level_index_next(callback);
                     },
                 }
             } else {
                 // If there are no more index blocks, we can just leave `table_data_iterator` empty.
+                it.table_data_next(callback);
             }
-
-            it.table_next(callback);
         }
 
-        fn table_next(it: *LevelDataIterator, callback: Callback) void {
+        inline fn table_data_next(it: *LevelIterator, callback: Callback) void {
             assert(it.callback == .none);
 
-            it.callback = .{ .table_next = callback };
-            it.table_data_iterator.next(on_table_next);
+            it.callback = .{ .table_data_next = callback };
+            it.table_data_iterator.next(on_table_data_next);
         }
 
-        fn on_table_next(table_data_iterator: *TableDataIterator, data_block: ?Grid.BlockPtrConst) void {
-            const it = @fieldParentPtr(LevelDataIterator, "table_data_iterator", table_data_iterator);
-            const callback = it.callback.table_next;
+        fn on_table_data_next(table_data_iterator: *TableDataIterator, data_block: ?Grid.BlockPtrConst) void {
+            const it = @fieldParentPtr(LevelIterator, "table_data_iterator", table_data_iterator);
+            const callback = it.callback.table_data_next;
             it.callback = .none;
 
             callback.on_data(it, data_block);

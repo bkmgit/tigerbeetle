@@ -106,7 +106,8 @@ pub fn CompactionType(
         // Allocated during `init`.
         iterator_a: TableDataIterator,
         iterator_b: LevelIterator,
-        index_blocks: [2]BlockPtr,
+        index_block_a: BlockPtr,
+        index_block_b: BlockPtr,
         data_blocks: [2]BlockPtr,
         table_builder: Table.Builder,
         last_keys_in: [2]?Key = .{ null, null },
@@ -166,12 +167,11 @@ pub fn CompactionType(
         iterator_tracer_slot: ?tracer.SpanStart,
 
         pub fn init(allocator: Allocator, tree_name: []const u8) !Compaction {
-            var index_blocks: [2]Grid.BlockPtr = undefined;
-            index_blocks[0] = try alloc_block(allocator);
-            errdefer allocator.free(index_blocks[0]);
+            const index_block_a = try alloc_block(allocator);
+            errdefer allocator.free(index_block_a);
 
-            index_blocks[1] = try alloc_block(allocator);
-            errdefer allocator.free(index_blocks[1]);
+            const index_block_b = try alloc_block(allocator);
+            errdefer allocator.free(index_block_b);
 
             var data_blocks: [2]Grid.BlockPtr = undefined;
 
@@ -189,7 +189,8 @@ pub fn CompactionType(
 
                 .iterator_a = TableDataIterator.init(),
                 .iterator_b = LevelIterator.init(),
-                .index_blocks = index_blocks,
+                .index_block_a = index_block_a,
+                .index_block_b = index_block_b,
                 .data_blocks = data_blocks,
                 .table_builder = table_builder,
 
@@ -209,8 +210,9 @@ pub fn CompactionType(
 
         pub fn deinit(compaction: *Compaction, allocator: Allocator) void {
             compaction.table_builder.deinit(allocator);
+            allocator.free(compaction.index_block_a);
+            allocator.free(compaction.index_block_b);
             for (compaction.data_blocks) |data_block| allocator.free(data_block);
-            for (compaction.index_blocks) |index_block| allocator.free(index_block);
         }
 
         pub fn reset(compaction: *Compaction) void {
@@ -280,7 +282,8 @@ pub fn CompactionType(
 
                 .iterator_a = compaction.iterator_a,
                 .iterator_b = compaction.iterator_b,
-                .index_blocks = compaction.index_blocks,
+                .index_block_a = compaction.index_block_a,
+                .index_block_b = compaction.index_block_b,
                 .data_blocks = compaction.data_blocks,
                 .table_builder = compaction.table_builder,
 
@@ -334,7 +337,7 @@ pub fn CompactionType(
                         .key_max = context.range_b.key_max,
                         .direction = .ascending,
                     },
-                    compaction.index_blocks[1],
+                    compaction.index_block_b,
                 );
 
                 switch (context.table_info_a) {
@@ -362,11 +365,11 @@ pub fn CompactionType(
 
             // `index_block` is only valid for this callback, so copy its contents.
             // TODO(jamii) This copy can be avoided if we bypass the cache.
-            stdx.copy_disjoint(.exact, u8, compaction.index_blocks[0], index_block);
+            stdx.copy_disjoint(.exact, u8, compaction.index_block_a, index_block);
             compaction.iterator_a.start(.{
                 .grid = compaction.context.grid,
-                .addresses = Table.index_data_addresses_used(compaction.index_blocks[0]),
-                .checksums = Table.index_data_checksums_used(compaction.index_blocks[0]),
+                .addresses = Table.index_data_addresses_used(compaction.index_block_a),
+                .checksums = Table.index_data_checksums_used(compaction.index_block_a),
             });
 
             compaction.state = .compacting;
