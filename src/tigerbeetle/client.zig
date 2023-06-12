@@ -27,7 +27,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             stdout.print(m, args) catch return;
         }
 
-        const Context = struct {
+        pub const Context = struct {
             event_loop_done: bool,
             request_done: bool,
 

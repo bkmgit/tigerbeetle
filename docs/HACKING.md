@@ -52,6 +52,12 @@ To run the unit tests:
 zig/zig build test
 ```
 
+To run a single test by name:
+
+```bash
+zig/zig build -Dtest-filter="name of test"
+```
+
 The [Setup](#setup) step above will install Zig for you to the root of the `tigerbeetle` directory.
 
 ### Simulation Tests

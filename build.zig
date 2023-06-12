@@ -184,6 +184,7 @@ pub fn build(b: *std.build.Builder) void {
         );
 
         const unit_tests = b.addTest("src/unit_tests.zig");
+        unit_tests.addPackage(vsr_package);
         unit_tests.setTarget(target);
         unit_tests.setBuildMode(mode);
         unit_tests.addOptions("vsr_options", options);
