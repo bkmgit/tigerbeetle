@@ -11,174 +11,6 @@ const MessagePool = vsr.message_pool.MessagePool;
 
 const tb = vsr.tigerbeetle;
 
-const Command = enum {
-    none,
-    create_accounts,
-    lookup_accounts,
-    create_transfers,
-    lookup_transfers,
-};
-
-fn match_command(arg: []const u8) ?Command {
-    if (std.mem.eql(u8, arg, "create-accounts")) {
-        return .create_accounts;
-    } else if (std.mem.eql(u8, arg, "lookup-accounts")) {
-        return .lookup_accounts;
-    } else if (std.mem.eql(u8, arg, "create-transfers")) {
-        return .create_transfers;
-    } else if (std.mem.eql(u8, arg, "lookup-transfers")) {
-        return .lookup_transfers;
-    }
-
-    return null;
-}
-
-pub fn parse_command_and_args(arena: *std.heap.ArenaAllocator, input: []const u8) struct {
-    cmd: Command,
-    args: [][]const u8,
-} {
-    var args = std.ArrayList([:0]const u8).init(arena.allocator());
-    var current_arg = std.ArrayList(u8).init(arena.allocator());
-
-    var arg_arena = std.heap.ArenaAllocator.init(arena.allocator());
-    defer arg_arena.deinit();
-
-    var in_arg = false;
-    var cmd_start: usize = 0;
-
-    // Skip initial white space
-    for (input.items) |c, i| {
-        if (c != ' ') {
-            cmd_start = i;
-            break;
-        }
-    }
-
-    for (input.items[cmd_start..]) |c, i| {
-        if (c == ' ' and cmd == .none) {
-            // Whitespace after the first command means we've found the first command.
-            var cmd_text = input.items[cmd_start .. cmd_start + i];
-            if (match_command(cmd_text)) |cmd_| {
-                cmd = cmd_;
-            } else {
-                context.err("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers. Got: '{s}'.\n", .{cmd_text});
-                return;
-            }
-        }
-
-        if (cmd != .none) {
-            // Does not handle nested quotes but that's ok
-            // since we don't need nested quotes.
-            if (c == '"') {
-                // Done one arg, start another
-                if (in_arg) {
-                    // Make a copy of it not just to give
-                    // it a 0-sentinel but so we can reset
-                    // the current_arg for future use.
-                    var copy: [:0]const u8 = try arg_arena.allocator().dupeZ(u8, current_arg.items);
-                    try args.append(copy);
-
-                    // Space for next arg
-                    current_arg.clearRetainingCapacity();
-                    in_arg = false;
-
-                    // Skip current "
-                    continue;
-                } else {
-                    in_arg = true;
-
-                    // Skip current "
-                    continue;
-                }
-            }
-        }
-
-        // Accumulate the current arg within parens.
-        if (in_arg) {
-            try current_arg.append(c);
-        }
-    }
-
-    return .{
-        .cmd = cmd,
-        .args = args,
-    };
-}
-
-fn parse_arg(
-    comptime T: type,
-    comptime name: []const u8,
-    arg: []const u8,
-    out: *T,
-) !void {
-    if (arg.len < name.len + 1 or !std.mem.eql(u8, arg[0 .. name.len + 1], name ++ ":")) {
-        return;
-    }
-
-    out.* = try std.fmt.parseInt(T, arg[name.len + 1 ..], 10);
-}
-
-fn parse_account_flags(context: *Context, arg: []const u8, flags: *tb.AccountFlags) !void {
-    flags.* = .{};
-
-    if (!(arg.len > 6 and std.mem.eql(u8, arg[0..6], "flags:"))) {
-        return;
-    }
-
-    var parts = std.mem.split(u8, arg[6..], "|");
-    while (parts.next()) |flag| {
-        if (std.mem.eql(u8, flag, "linked")) {
-            flags.*.linked = true;
-            continue;
-        }
-
-        if (std.mem.eql(u8, flag, "debits_must_not_exceed_credits")) {
-            flags.*.debits_must_not_exceed_credits = true;
-            continue;
-        }
-
-        if (std.mem.eql(u8, flag, "credits_must_not_exceed_debits")) {
-            flags.*.credits_must_not_exceed_debits = true;
-            continue;
-        }
-
-        return errors.NoSuchdddAccountFlag;
-        context.err("No such account flag: {s}.\n", .{flag});
-    }
-}
-
-pub fn parse_account(arena: *std.heap.ArenaAllocator, arg: []const u8) !tb.Account {
-    var account = tb.Account{
-        .id = 0,
-        .user_data = 0,
-        .reserved = [_]u8{0} ** 48,
-        .ledger = 0,
-        .code = 0,
-        .flags = .{},
-        .debits_pending = 0,
-        .debits_posted = 0,
-        .credits_pending = 0,
-        .credits_posted = 0,
-    };
-
-    var parts = std.mem.split(u8, arg, " ");
-    while (parts.next()) |part| {
-        // Parse account fields
-        try parse_arg(u128, "id", part, &account.id);
-        try parse_arg(u128, "user_data", part, &account.user_data);
-        try parse_arg(u32, "ledger", part, &account.ledger);
-        try parse_arg(u16, "code", part, &account.code);
-        try parse_arg(u64, "debits_pending", part, &account.debits_pending);
-        try parse_arg(u64, "debits_posted", part, &account.debits_posted);
-        try parse_arg(u64, "credits_pending", part, &account.credits_pending);
-        try parse_arg(u64, "credits_posted", part, &account.credits_posted);
-
-        try parse_account_flags(context, part, &account.flags);
-    }
-
-    return account;
-}
-
 pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
     return struct {
         const Self = @This();
@@ -216,6 +48,252 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 }
             }
         };
+
+        const Command = enum {
+            none,
+            create_accounts,
+            lookup_accounts,
+            create_transfers,
+            lookup_transfers,
+        };
+
+        fn match_command(arg: []const u8) ?Command {
+            if (std.mem.eql(u8, arg, "create-accounts")) {
+                return .create_accounts;
+            } else if (std.mem.eql(u8, arg, "lookup-accounts")) {
+                return .lookup_accounts;
+            } else if (std.mem.eql(u8, arg, "create-transfers")) {
+                return .create_transfers;
+            } else if (std.mem.eql(u8, arg, "lookup-transfers")) {
+                return .lookup_transfers;
+            }
+
+            return null;
+        }
+
+        pub fn parse_command_and_args(arena: *std.heap.ArenaAllocator, input: []const u8) struct {
+            cmd: Command,
+            args: [][]const u8,
+        } {
+            var args = std.ArrayList([:0]const u8).init(arena.allocator());
+            var current_arg = std.ArrayList(u8).init(arena.allocator());
+
+            var arg_arena = std.heap.ArenaAllocator.init(arena.allocator());
+            defer arg_arena.deinit();
+
+            var in_arg = false;
+            var cmd_start: usize = 0;
+
+            // Skip initial white space
+            for (input.items) |c, i| {
+                if (c != ' ') {
+                    cmd_start = i;
+                    break;
+                }
+            }
+
+            for (input.items[cmd_start..]) |c, i| {
+                if (c == ' ' and cmd == .none) {
+                    // Whitespace after the first command means we've found the first command.
+                    var cmd_text = input.items[cmd_start .. cmd_start + i];
+                    if (match_command(cmd_text)) |cmd_| {
+                        cmd = cmd_;
+                    } else {
+                        context.err("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers. Got: '{s}'.\n", .{cmd_text});
+                        return;
+                    }
+                }
+
+                if (cmd != .none) {
+                    // Does not handle nested quotes but that's ok
+                    // since we don't need nested quotes.
+                    if (c == '"') {
+                        // Done one arg, start another
+                        if (in_arg) {
+                            // Make a copy of it not just to give
+                            // it a 0-sentinel but so we can reset
+                            // the current_arg for future use.
+                            var copy: [:0]const u8 = try arg_arena.allocator().dupeZ(u8, current_arg.items);
+                            try args.append(copy);
+
+                            // Space for next arg
+                            current_arg.clearRetainingCapacity();
+                            in_arg = false;
+
+                            // Skip current "
+                            continue;
+                        } else {
+                            in_arg = true;
+
+                            // Skip current "
+                            continue;
+                        }
+                    }
+                }
+
+                // Accumulate the current arg within parens.
+                if (in_arg) {
+                    try current_arg.append(c);
+                }
+            }
+
+            return .{
+                .cmd = cmd,
+                .args = args,
+            };
+        }
+
+        fn parse_arg(
+            comptime T: type,
+            comptime name: []const u8,
+            arg: []const u8,
+            out: *T,
+        ) !void {
+            if (arg.len < name.len + 1 or !std.mem.eql(u8, arg[0 .. name.len + 1], name ++ ":")) {
+                return;
+            }
+
+            out.* = try std.fmt.parseInt(T, arg[name.len + 1 ..], 10);
+        }
+
+        fn parse_account_flags(context: *Context, arg: []const u8, flags: *tb.AccountFlags) !void {
+            flags.* = .{};
+
+            if (!(arg.len > 6 and std.mem.eql(u8, arg[0..6], "flags:"))) {
+                return;
+            }
+
+            var parts = std.mem.split(u8, arg[6..], "|");
+            while (parts.next()) |flag| {
+                if (std.mem.eql(u8, flag, "linked")) {
+                    flags.*.linked = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "debits_must_not_exceed_credits")) {
+                    flags.*.debits_must_not_exceed_credits = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "credits_must_not_exceed_debits")) {
+                    flags.*.credits_must_not_exceed_debits = true;
+                    continue;
+                }
+
+                context.err("No such account flag: {s}.\n", .{flag});
+                return error.BadInput;
+            }
+        }
+
+        pub fn parse_account(context: *Context, arena: *std.heap.ArenaAllocator, arg: []const u8) !tb.Account {
+            var account = tb.Account{
+                .id = 0,
+                .user_data = 0,
+                .reserved = [_]u8{0} ** 48,
+                .ledger = 0,
+                .code = 0,
+                .flags = .{},
+                .debits_pending = 0,
+                .debits_posted = 0,
+                .credits_pending = 0,
+                .credits_posted = 0,
+            };
+
+            var parts = std.mem.split(u8, arg, " ");
+            while (parts.next()) |part| {
+                // Parse account fields
+                try parse_arg(u128, "id", part, &account.id);
+                try parse_arg(u128, "user_data", part, &account.user_data);
+                try parse_arg(u32, "ledger", part, &account.ledger);
+                try parse_arg(u16, "code", part, &account.code);
+                try parse_arg(u64, "debits_pending", part, &account.debits_pending);
+                try parse_arg(u64, "debits_posted", part, &account.debits_posted);
+                try parse_arg(u64, "credits_pending", part, &account.credits_pending);
+                try parse_arg(u64, "credits_posted", part, &account.credits_posted);
+
+                try parse_account_flags(context, part, &account.flags);
+            }
+
+            return account;
+        }
+
+        fn parse_transfer_flags(context: *Context, arg: []const u8, flags: *tb.TransferFlags) !void {
+            flags.* = .{};
+
+            if (!(arg.len > 6 and std.mem.eql(u8, arg[0..6], "flags:"))) {
+                return;
+            }
+
+            var parts = std.mem.split(u8, arg[6..], "|");
+            while (parts.next()) |flag| {
+                if (std.mem.eql(u8, flag, "linked")) {
+                    flags.*.linked = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "pending")) {
+                    flags.*.pending = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "post_pending_transfer")) {
+                    flags.*.post_pending_transfer = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "void_pending_transfer")) {
+                    flags.*.void_pending_transfer = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "balancing_debit")) {
+                    flags.*.balancing_debit = true;
+                    continue;
+                }
+
+                if (std.mem.eql(u8, flag, "balancing_credit")) {
+                    flags.*.balancing_credit = true;
+                    continue;
+                }
+
+                context.err("No such transfer flag: {s}.\n", .{flag});
+                return error.BadInput;
+            }
+        }
+
+        pub fn parse_transfer(context: *Context, arena: *std.heap.ArenaAllocator, arg: []const u8) !tb.Transfer {
+            var transfer = tb.Transfer{
+                .id = 0,
+                .debit_account_id = 0,
+                .credit_account_id = 0,
+                .user_data = 0,
+                .reserved = 0,
+                .pending_id = 0,
+                .timeout = 0,
+                .ledger = 0,
+                .code = 0,
+                .flags = .{},
+                .amount = 0,
+                .timestamp = 0,
+            };
+
+            var parts = std.mem.split(u8, arg, " ");
+            while (parts.next()) |part| {
+                try parse_arg(u128, "id", part, &transfer.id);
+                try parse_arg(u128, "debit_account_id", part, &transfer.debit_account_id);
+                try parse_arg(u128, "credit_account_id", part, &transfer.credit_account_id);
+                try parse_arg(u128, "user_data", part, &transfer.user_data);
+                try parse_arg(u128, "pending_id", part, &transfer.pending_id);
+                try parse_arg(u64, "timeout", part, &transfer.timeout);
+                try parse_arg(u32, "ledger", part, &transfer.ledger);
+                try parse_arg(u16, "code", part, &transfer.code);
+                try parse_arg(u64, "amount", part, &transfer.amount);
+
+                try parse_transfer_flags(context, part, &transfer.flags);
+            }
+
+            return transfer;
+        }
 
         fn do_command(
             arena: *std.heap.ArenaAllocator,
@@ -269,7 +347,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             var cmd: Command = .none;
 
-            var result = parse_command_and_args(arena, input.items);
+            var result = parse_command_and_args(arena, input.items) catch |_| {
+                return;
+            };
 
             // No input was parsed.
             if (result.cmd == .none) {
@@ -396,7 +476,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             var batch_accounts = try std.ArrayList(tb.Account).initCapacity(allocator, args.len);
 
             for (args) |arg| {
-                var account = parse_account(arena, arg);
+                var account = parse_account(arena, arg) catch |err| {
+                    context.err("Could not parse account input.\n", .{});
+                };
                 batch_accounts.appendAssumeCapacity(account);
             }
 
@@ -436,49 +518,6 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
-        fn parse_transfer_flags(context: *Context, arg: []const u8, flags: *tb.TransferFlags) !void {
-            flags.* = .{};
-
-            if (!(arg.len > 6 and std.mem.eql(u8, arg[0..6], "flags:"))) {
-                return;
-            }
-
-            var parts = std.mem.split(u8, arg[6..], "|");
-            while (parts.next()) |flag| {
-                if (std.mem.eql(u8, flag, "linked")) {
-                    flags.*.linked = true;
-                    continue;
-                }
-
-                if (std.mem.eql(u8, flag, "pending")) {
-                    flags.*.pending = true;
-                    continue;
-                }
-
-                if (std.mem.eql(u8, flag, "post_pending_transfer")) {
-                    flags.*.post_pending_transfer = true;
-                    continue;
-                }
-
-                if (std.mem.eql(u8, flag, "void_pending_transfer")) {
-                    flags.*.void_pending_transfer = true;
-                    continue;
-                }
-
-                if (std.mem.eql(u8, flag, "balancing_debit")) {
-                    flags.*.balancing_debit = true;
-                    continue;
-                }
-
-                if (std.mem.eql(u8, flag, "balancing_credit")) {
-                    flags.*.balancing_credit = true;
-                    continue;
-                }
-
-                context.err("No such transfer flag: {s}.\n", .{flag});
-            }
-        }
-
         fn create_transfers(
             arena: *std.heap.ArenaAllocator,
             args: []const [:0]const u8,
@@ -493,37 +532,6 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             var batch_transfers = try std.ArrayList(tb.Transfer).initCapacity(allocator, args.len);
 
             for (args) |arg| {
-                var transfer = tb.Transfer{
-                    .id = 0,
-                    .debit_account_id = 0,
-                    .credit_account_id = 0,
-                    .user_data = 0,
-                    .reserved = 0,
-                    .pending_id = 0,
-                    .timeout = 0,
-                    .ledger = 0,
-                    .code = 0,
-                    .flags = .{},
-                    .amount = 0,
-                    .timestamp = 0,
-                };
-
-                var parts = std.mem.split(u8, arg, " ");
-                while (parts.next()) |part| {
-                    // Parse transfer fields
-                    try parse_arg(u128, "id", part, &transfer.id);
-                    try parse_arg(u128, "debit_account_id", part, &transfer.debit_account_id);
-                    try parse_arg(u128, "credit_account_id", part, &transfer.credit_account_id);
-                    try parse_arg(u128, "user_data", part, &transfer.user_data);
-                    try parse_arg(u128, "pending_id", part, &transfer.pending_id);
-                    try parse_arg(u64, "timeout", part, &transfer.timeout);
-                    try parse_arg(u32, "ledger", part, &transfer.ledger);
-                    try parse_arg(u16, "code", part, &transfer.code);
-                    try parse_arg(u64, "amount", part, &transfer.amount);
-
-                    try parse_transfer_flags(context, part, &transfer.flags);
-                }
-
                 batch_transfers.appendAssumeCapacity(transfer);
             }
 
