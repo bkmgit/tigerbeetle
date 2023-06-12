@@ -22,6 +22,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             std.os.exit(1);
         }
 
+        fn print(comptime m: []const u8, args: anytype) void {
+            const stdout = std.io.getStdOut().writer();
+            stdout.print(m, args) catch return;
+        }
+
         const Context = struct {
             event_loop_done: bool,
             request_done: bool,
@@ -37,14 +42,12 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     Self.err(m, args);
                 }
 
-                const stdout = std.io.getStdOut().writer();
-                stdout.print(m, args) catch unreachable;
+                print(m, args);
             }
 
             fn debug(context: *Context, comptime m: []const u8, args: anytype) void {
                 if (context.debug_logs) {
-                    const stdout = std.io.getStdOut().writer();
-                    stdout.print("[Debug] " ++ m, args) catch unreachable;
+                    print("[Debug] " ++ m, args);
                 }
             }
         };
@@ -71,10 +74,15 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             return null;
         }
 
-        pub fn parse_command_and_args(arena: *std.heap.ArenaAllocator, input: []const u8) struct {
+        const CommandAndArgs = struct {
             cmd: Command,
-            args: [][]const u8,
-        } {
+            args: []const [:0]const u8,
+        };
+        pub fn parse_command_and_args(
+            context: *Context,
+            arena: *std.heap.ArenaAllocator,
+            input: []const u8,
+        ) !CommandAndArgs {
             var args = std.ArrayList([:0]const u8).init(arena.allocator());
             var current_arg = std.ArrayList(u8).init(arena.allocator());
 
@@ -85,22 +93,26 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             var cmd_start: usize = 0;
 
             // Skip initial white space
-            for (input.items) |c, i| {
+            for (input) |c, i| {
                 if (c != ' ') {
                     cmd_start = i;
                     break;
                 }
             }
 
-            for (input.items[cmd_start..]) |c, i| {
+            var cmd: Command = .none;
+            for (input[cmd_start..]) |c, i| {
                 if (c == ' ' and cmd == .none) {
                     // Whitespace after the first command means we've found the first command.
-                    var cmd_text = input.items[cmd_start .. cmd_start + i];
+                    var cmd_text = input[cmd_start .. cmd_start + i];
                     if (match_command(cmd_text)) |cmd_| {
                         cmd = cmd_;
                     } else {
-                        context.err("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers. Got: '{s}'.\n", .{cmd_text});
-                        return;
+                        context.err(
+                            "Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers. Got: '{s}'.\n",
+                            .{cmd_text},
+                        );
+                        return error.BadCommand;
                     }
                 }
 
@@ -113,7 +125,10 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                             // Make a copy of it not just to give
                             // it a 0-sentinel but so we can reset
                             // the current_arg for future use.
-                            var copy: [:0]const u8 = try arg_arena.allocator().dupeZ(u8, current_arg.items);
+                            var copy: [:0]const u8 = try arg_arena.allocator().dupeZ(
+                                u8,
+                                current_arg.items,
+                            );
                             try args.append(copy);
 
                             // Space for next arg
@@ -137,9 +152,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 }
             }
 
-            return .{
+            return CommandAndArgs{
                 .cmd = cmd,
-                .args = args,
+                .args = args.items,
             };
         }
 
@@ -180,12 +195,12 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     continue;
                 }
 
-                context.err("No such account flag: {s}.\n", .{flag});
+                context.err("No such account flag: '{s}'.\n", .{flag});
                 return error.BadInput;
             }
         }
 
-        pub fn parse_account(context: *Context, arena: *std.heap.ArenaAllocator, arg: []const u8) !tb.Account {
+        pub fn parse_account(context: *Context, arg: []const u8) !tb.Account {
             var account = tb.Account{
                 .id = 0,
                 .user_data = 0,
@@ -256,12 +271,12 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     continue;
                 }
 
-                context.err("No such transfer flag: {s}.\n", .{flag});
+                context.err("No such transfer flag: '{s}'.\n", .{flag});
                 return error.BadInput;
             }
         }
 
-        pub fn parse_transfer(context: *Context, arena: *std.heap.ArenaAllocator, arg: []const u8) !tb.Transfer {
+        pub fn parse_transfer(context: *Context, arg: []const u8) !tb.Transfer {
             var transfer = tb.Transfer{
                 .id = 0,
                 .debit_account_id = 0,
@@ -315,14 +330,12 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             arena: *std.heap.ArenaAllocator,
             context: *Context,
         ) !void {
-            const stdout = std.io.getStdOut().writer();
-
             while (!context.request_done) {
                 // Wait for request to complete
                 std.time.sleep(1_000);
             }
 
-            try stdout.print("> ", .{});
+            print("> ", .{});
 
             const in = std.io.getStdIn();
             var stream = std.io.bufferedReader(in.reader()).reader();
@@ -345,11 +358,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 return e;
             }
 
-            var cmd: Command = .none;
-
-            var result = parse_command_and_args(arena, input.items) catch |_| {
-                return;
-            };
+            var result = parse_command_and_args(context, arena, input.items) catch return;
 
             // No input was parsed.
             if (result.cmd == .none) {
@@ -359,10 +368,38 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             try do_command(
                 arena,
-                result.args.items,
+                result.args,
                 context,
                 result.cmd,
             );
+        }
+
+        fn display_help() void {
+            print(
+                \\TigerBeetle Client
+                \\  Terminal client for interacting with TigerBeetle.
+                \\
+                \\  Flags:
+                \\    --addresses=address[,...]  Specify TigerBeetle replica addresses.
+                \\    --help, -h                 Print this message.
+                \\    --debug, -d                Show additional debugging logs.
+                \\
+                \\  Commands:
+                \\    create-accounts            Create one or more accounts grouped by quotes, separated by spaces.
+                \\    lookup-accounts            Look up one or more accounts separated by spaces.
+                \\    create-transfers           Create one or more transfers grouped by quotes, separated by spaces.
+                \\    lookup-transfers           Look up one or more transfers separated by spaces.
+                \\    repl                       Enter an interactive REPL.
+                \\
+                \\Examples:
+                \\  $ tigerbeetle client --addresses=3000 create-accounts \
+                \\    "id:1 code:1 ledger:1" \
+                \\    "id:2 code:1 ledger:1"
+                \\  $ tigerbeetle client --addresses=3000 create-transfers \
+                \\    "id:1 debit_account_id:1 credit_account_id:2 amount:10 ledger:1 code:1"
+                \\  $ tigerbeetle client --addresses=3000 lookup-accounts "id:1"
+                \\  $ tigerbeetle client --addresses=3000 repl
+            , .{});
         }
 
         pub fn run(
@@ -383,6 +420,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                         std.mem.eql(u8, arg, "-d"))
                     {
                         debug = true;
+                    } else if (std.mem.eql(u8, arg, "--help") or
+                        std.mem.eql(u8, arg, "-h"))
+                    {
+                        display_help();
+                        return;
                     } else if (std.mem.startsWith(u8, arg, "--addresses=")) {
                         // Already handled by ./cli.zig
                     } else {
@@ -405,7 +447,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             }
 
             if (cmd == .none and !interactive) {
-                err("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers.\n", .{});
+                err("Command must be repl, create-accounts, lookup-accounts, create-transfers, or lookup-transfers.\n", .{});
             }
 
             var context = try allocator.create(Context);
@@ -421,7 +463,6 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             var message_pool = try MessagePool.init(allocator, .client);
 
-            std.debug.print("Addresses: {any}\n", .{addresses});
             var client = try Client.init(
                 allocator,
                 client_id,
@@ -436,8 +477,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             context.client = &client;
 
             if (context.repl) {
-                const stdout = std.io.getStdOut().writer();
-                try stdout.print(
+                print(
                     \\TigerBeetle Client
                     \\  Hit enter after a semicolon to run a command.
                     \\
@@ -476,8 +516,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             var batch_accounts = try std.ArrayList(tb.Account).initCapacity(allocator, args.len);
 
             for (args) |arg| {
-                var account = parse_account(arena, arg) catch |err| {
+                var account = parse_account(context, arg) catch {
                     context.err("Could not parse account input.\n", .{});
+                    return;
                 };
                 batch_accounts.appendAssumeCapacity(account);
             }
@@ -524,7 +565,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             context: *Context,
         ) !void {
             if (args.len == 0) {
-                context.err("No accounts to create.\n", .{});
+                context.err("No transfers to create.\n", .{});
                 return;
             }
 
@@ -532,6 +573,10 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             var batch_transfers = try std.ArrayList(tb.Transfer).initCapacity(allocator, args.len);
 
             for (args) |arg| {
+                var transfer = parse_transfer(context, arg) catch {
+                    context.err("Could not parse transfer input.\n", .{});
+                    return;
+                };
                 batch_transfers.appendAssumeCapacity(transfer);
             }
 
@@ -596,35 +641,31 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
-        fn display_account_flags(flags: tb.AccountFlags) !void {
-            const stdout = std.io.getStdOut().writer();
-
+        fn display_account_flags(flags: tb.AccountFlags) void {
             if (flags.linked) {
-                try stdout.print("linked", .{});
+                print("linked", .{});
             }
 
             if (flags.debits_must_not_exceed_credits) {
                 if (flags.linked) {
-                    try stdout.print("|", .{});
+                    print("|", .{});
                 }
 
-                try stdout.print("debits_must_not_exceed_credits", .{});
+                print("debits_must_not_exceed_credits", .{});
             }
 
             if (flags.credits_must_not_exceed_debits) {
                 if (flags.linked or flags.debits_must_not_exceed_credits) {
-                    try stdout.print("|", .{});
+                    print("|", .{});
                 }
 
-                try stdout.print("credits_must_not_exceed_debits", .{});
+                print("credits_must_not_exceed_debits", .{});
             }
         }
 
         fn display_accounts(accounts: []align(1) const tb.Account) void {
-            const stdout = std.io.getStdOut().writer();
-
             for (accounts) |account| {
-                stdout.print(
+                print(
                     \\{{
                     \\  "id":              "{}",
                     \\  "user_data":       "{}",
@@ -636,13 +677,13 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     account.user_data,
                     account.ledger,
                     account.code,
-                }) catch unreachable;
+                });
 
-                display_account_flags(account.flags) catch unreachable;
+                display_account_flags(account.flags);
 
-                stdout.print("\",\n", .{}) catch unreachable;
+                print("\",\n", .{});
 
-                stdout.print(
+                print(
                     \\  "debits_pending":  "{}",
                     \\  "debits_posted":   "{}",
                     \\  "credits_pending": "{}",
@@ -654,50 +695,46 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     account.debits_posted,
                     account.credits_pending,
                     account.credits_posted,
-                }) catch unreachable;
+                });
             }
         }
 
         fn display_account_result_errors(errors: []align(1) const tb.CreateAccountsResult) void {
-            const stdout = std.io.getStdOut().writer();
-
             for (errors) |reason| {
-                stdout.print(
+                print(
                     "Failed to create account ({}): {any}.\n",
                     .{ reason.index, reason.result },
-                ) catch unreachable;
+                );
             }
         }
 
-        fn display_transfer_flags(flags: tb.TransferFlags) !void {
-            const stdout = std.io.getStdOut().writer();
-
+        fn display_transfer_flags(flags: tb.TransferFlags) void {
             if (flags.linked) {
-                try stdout.print("linked", .{});
+                print("linked", .{});
             }
 
             if (flags.pending) {
                 if (flags.linked) {
-                    try stdout.print("|", .{});
+                    print("|", .{});
                 }
 
-                try stdout.print("pending", .{});
+                print("pending", .{});
             }
 
             if (flags.post_pending_transfer) {
                 if (flags.linked or flags.pending) {
-                    try stdout.print("|", .{});
+                    print("|", .{});
                 }
 
-                try stdout.print("post_pending_transfer", .{});
+                print("post_pending_transfer", .{});
             }
 
             if (flags.void_pending_transfer) {
                 if (flags.linked or flags.pending or flags.post_pending_transfer) {
-                    try stdout.print("|", .{});
+                    print("|", .{});
                 }
 
-                try stdout.print("void_pending_transfer", .{});
+                print("void_pending_transfer", .{});
             }
 
             if (flags.balancing_debit) {
@@ -706,10 +743,10 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     flags.post_pending_transfer or
                     flags.void_pending_transfer)
                 {
-                    try stdout.print("|", .{});
+                    print("|", .{});
                 }
 
-                try stdout.print("balancing_debit", .{});
+                print("balancing_debit", .{});
             }
 
             if (flags.balancing_credit) {
@@ -719,18 +756,16 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     flags.void_pending_transfer or
                     flags.balancing_debit)
                 {
-                    try stdout.print("|", .{});
+                    print("|", .{});
                 }
 
-                try stdout.print("balancing_credit", .{});
+                print("balancing_credit", .{});
             }
         }
 
         fn display_transfers(transfers: []align(1) const tb.Transfer) void {
-            const stdout = std.io.getStdOut().writer();
-
             for (transfers) |transfer| {
-                stdout.print(
+                print(
                     \\{{
                     \\  "id":                "{}",
                     \\  "debit_account_id":  "{}",
@@ -750,13 +785,13 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     transfer.timeout,
                     transfer.ledger,
                     transfer.code,
-                }) catch unreachable;
+                });
 
-                display_transfer_flags(transfer.flags) catch unreachable;
+                display_transfer_flags(transfer.flags);
 
-                stdout.print("\",\n", .{}) catch unreachable;
+                print("\",\n", .{});
 
-                stdout.print(
+                print(
                     \\  "amount":            "{}",
                     \\  "timestamp":         "{}",
                     \\}}
@@ -764,18 +799,16 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 , .{
                     transfer.amount,
                     transfer.timestamp,
-                }) catch unreachable;
+                });
             }
         }
 
         fn display_transfer_result_errors(errors: []align(1) const tb.CreateTransfersResult) void {
-            const stdout = std.io.getStdOut().writer();
-
             for (errors) |reason| {
-                stdout.print(
+                print(
                     "Failed to create transfer ({}): {any}.\n",
                     .{ reason.index, reason.result },
-                ) catch unreachable;
+                );
             }
         }
 
@@ -795,8 +828,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 if (!context.repl) {
                     context.event_loop_done = true;
                 } else {
-                    const stdout = std.io.getStdOut().writer();
-                    stdout.print("Ok.\n", .{}) catch unreachable;
+                    print("Ok.\n", .{});
                 }
             }
 
