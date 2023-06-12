@@ -216,7 +216,7 @@ pub fn parse_args(allocator: std.mem.Allocator) !Command {
         } else if (mem.eql(u8, arg, "-h") or mem.eql(u8, arg, "--help")) {
             std.io.getStdOut().writeAll(usage) catch os.exit(1);
             os.exit(0);
-        } else if (mem.startsWith(u8, arg, "-")) {
+        } else if (mem.startsWith(u8, arg, "-") and command != .client) {
             fatal("unexpected argument: '{s}'", .{arg});
         } else if (path == null and command != .client) {
             if (!(command == .format or command == .start)) fatal("unexpected path", .{});

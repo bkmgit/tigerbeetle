@@ -13,19 +13,40 @@ const tb = vsr.tigerbeetle;
 
 pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
     return struct {
+        const Self = @This();
         const Client = vsr.Client(StateMachine, MessageBus);
 
-        fn panic(comptime m: []const u8, args: anytype) noreturn {
+        fn err(comptime m: []const u8, args: anytype) noreturn {
             const stderr = std.io.getStdErr().writer();
             stderr.print(m, args) catch unreachable;
             std.os.exit(1);
         }
 
         const Context = struct {
-            done: bool,
+            event_loop_done: bool,
+            request_done: bool,
+
             repl: bool,
+            debug_logs: bool,
+
             client: *Client,
             message: ?*MessagePool.Message,
+
+            fn err(context: *Context, comptime m: []const u8, args: anytype) void {
+                if (!context.repl) {
+                    Self.err(m, args);
+                }
+
+                const stdout = std.io.getStdOut().writer();
+                stdout.print(m, args) catch unreachable;
+            }
+
+            fn debug(context: *Context, comptime m: []const u8, args: anytype) void {
+                if (context.debug_logs) {
+                    const stdout = std.io.getStdOut().writer();
+                    stdout.print("[Debug] " ++ m, args) catch unreachable;
+                }
+            }
         };
 
         const Command = enum {
@@ -36,7 +57,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             lookup_transfers,
         };
 
-        fn match_command(arg: []const u8) Command {
+        fn match_command(arg: []const u8) ?Command {
             if (std.mem.eql(u8, arg, "create-accounts")) {
                 return .create_accounts;
             } else if (std.mem.eql(u8, arg, "lookup-accounts")) {
@@ -47,7 +68,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 return .lookup_transfers;
             }
 
-            panic("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers.\n", .{});
+            return null;
         }
 
         fn do_command(
@@ -56,12 +77,13 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             context: *Context,
             cmd: Command,
         ) !void {
+            context.debug("Running command: {}.\n", .{cmd});
             switch (cmd) {
                 .create_accounts => try create_accounts(arena, rest, context),
                 .lookup_accounts => try lookup_accounts(arena, rest, context),
                 .create_transfers => try create_transfers(arena, rest, context),
                 .lookup_transfers => try lookup_transfers(arena, rest, context),
-                else => panic("Command not yet implemented.", .{}),
+                else => err("Command not yet implemented.", .{}),
             }
         }
 
@@ -70,69 +92,109 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             context: *Context,
         ) !void {
             const stdout = std.io.getStdOut().writer();
+            var args = std.ArrayList([:0]const u8).init(arena.allocator());
+            var current_arg = std.ArrayList(u8).init(arena.allocator());
 
-            var done = false;
-            while (!done) {
-                try stdout.print("> ", .{});
+            var arg_arena = std.heap.ArenaAllocator.init(arena.allocator());
+            defer arg_arena.deinit();
 
-                const in = std.io.getStdIn();
-                var stream = std.io.bufferedReader(in.reader()).reader();
+            while (!context.request_done) {
+                // Wait for request to complete
+                std.time.sleep(1_000);
+            }
 
-                var input = std.ArrayList(u8).init(arena.allocator());
-                var buf: [4096]u8 = undefined;
+            try stdout.print("> ", .{});
 
-                if (stream.readUntilDelimiterOrEof(&buf, ';')) |bytes| {
-                    if (bytes) |b| {
-                        try input.appendSlice(b);
+            const in = std.io.getStdIn();
+            var stream = std.io.bufferedReader(in.reader()).reader();
+
+            var input = std.ArrayList(u8).init(arena.allocator());
+            var buf: [4096]u8 = undefined;
+
+            if (stream.readUntilDelimiterOrEof(&buf, ';')) |bytes| {
+                if (bytes) |b| {
+                    try input.appendSlice(b);
+                } else {
+                    // EOF
+                    context.event_loop_done = true;
+                    context.err("\nExiting.\n", .{});
+                    return;
+                }
+            } else |e| {
+                context.event_loop_done = true;
+                err("Failed to read from stdin: {any}\n", .{e});
+                return e;
+            }
+
+            var cmd: Command = .none;
+            var in_arg = false;
+            var cmd_start: usize = 0;
+
+            // Skip initial white space
+            for (input.items) |c, i| {
+                if (c != ' ') {
+                    cmd_start = i;
+                    break;
+                }
+            }
+
+            for (input.items[cmd_start..]) |c, i| {
+                if (c == ' ' and cmd == .none) {
+                    // Whitespace after the first command means we've found the first command.
+                    var cmd_text = input.items[cmd_start .. cmd_start + i];
+                    if (match_command(cmd_text)) |cmd_| {
+                        cmd = cmd_;
+                    } else {
+                        context.err("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers. Got: '{s}'.\n", .{cmd_text});
+                        return;
                     }
-                } else |err| {
-                    done = true;
-                    context.done = true;
-                    return err;
                 }
 
-                var cmd: Command = .none;
-                var args = std.ArrayList([:0]const u8).init(arena.allocator());
-                var current_arg = std.ArrayList(u8).init(arena.allocator());
-                var in_arg = false;
+                if (cmd != .none) {
+                    // Does not handle nested quotes but that's ok
+                    // since we don't need nested quotes.
+                    if (c == '"') {
+                        // Done one arg, start another
+                        if (in_arg) {
+                            // Make a copy of it not just to give
+                            // it a 0-sentinel but so we can reset
+                            // the current_arg for future use.
+                            var copy: [:0]const u8 = try arg_arena.allocator().dupeZ(u8, current_arg.items);
+                            try args.append(copy);
 
-                for (input.items) |c, i| {
-                    if (c == ' ' and cmd == .none) {
-                        cmd = match_command(input.items[0..i]);
-                    }
+                            // Space for next arg
+                            current_arg.clearRetainingCapacity();
+                            in_arg = false;
 
-                    if (cmd != .none) {
-                        if (c == '"') {
-                            // Done one arg, start another
-                            if (in_arg) {
-                                try args.append(current_arg.items[0.. :0]);
-                                // Reset the current arg.
-                                current_arg.clearRetainingCapacity();
-                                in_arg = false;
+                            // Skip current "
+                            continue;
+                        } else {
+                            in_arg = true;
 
-                                // Skip current "
-                                continue;
-                            } else {
-                                in_arg = true;
-
-                                // Skip current "
-                                continue;
-                            }
+                            // Skip current "
+                            continue;
                         }
                     }
-
-                    if (in_arg) {
-                        try current_arg.append(c);
-                    }
                 }
 
-                try do_command(
-                    arena,
-                    args.items,
-                    context,
-                    cmd,
-                );
+                // Accumulate the current arg within parens.
+                if (in_arg) {
+                    try current_arg.append(c);
+                }
             }
+
+            // No input was parsed.
+            if (cmd == .none) {
+                context.debug("No command was parsed, continuing.\n", .{});
+                return;
+            }
+
+            try do_command(
+                arena,
+                args.items,
+                context,
+                cmd,
+            );
         }
 
         pub fn run(
@@ -145,24 +207,44 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             var cmd: Command = .none;
             var rest = args.items;
             var interactive = false;
+            var debug = false;
 
             for (args.items) |arg, i| {
                 if (arg[0] == '-') {
+                    if (std.mem.eql(u8, arg, "--debug") or
+                        std.mem.eql(u8, arg, "-d"))
+                    {
+                        debug = true;
+                    } else if (std.mem.startsWith(u8, arg, "--addresses=")) {
+                        // Already handled by ./cli.zig
+                    } else {
+                        err("Unexpected argument: '{s}'.\n", .{arg});
+                    }
+
                     continue;
                 }
 
                 if (std.mem.eql(u8, arg, "repl")) {
                     interactive = true;
                 } else {
-                    cmd = match_command(arg);
+                    if (match_command(arg)) |cmd_| {
+                        cmd = cmd_;
+                    }
                 }
                 rest = args.items[i + 1 ..];
 
                 break;
             }
 
+            if (cmd == .none and !interactive) {
+                err("Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers.\n", .{});
+            }
+
             var context = try allocator.create(Context);
-            context.done = false;
+            context.debug_logs = debug;
+            context.request_done = true;
+            context.event_loop_done = false;
+            context.repl = interactive;
 
             const client_id = std.crypto.random.int(u128);
             const cluster_id: u32 = 0;
@@ -171,6 +253,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             var message_pool = try MessagePool.init(allocator, .client);
 
+            std.debug.print("Addresses: {any}\n", .{addresses});
             var client = try Client.init(
                 allocator,
                 client_id,
@@ -184,14 +267,28 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
             context.client = &client;
 
-            if (interactive) {
-                context.repl = true;
-                try repl(arena, context);
+            if (context.repl) {
+                const stdout = std.io.getStdOut().writer();
+                try stdout.print(
+                    \\TigerBeetle Client
+                    \\  Hit enter after a semicolon to run a command.
+                    \\
+                    \\Examples:
+                    \\  create-accounts "id:1 code:1 ledger:1"
+                    \\                  "id:2 code:1 ledger:1";
+                    \\  create-transfers "id:1 debit_account_id:1 credit_account_id:2 amount:10 ledger:1 code:1";
+                    \\  lookup-accounts "id:1";
+                    \\
+                    \\
+                , .{});
             } else {
                 try do_command(arena, rest, context, cmd);
             }
 
-            while (!context.done) {
+            while (!context.event_loop_done) {
+                if (context.request_done and context.repl) {
+                    try repl(arena, context);
+                }
                 context.client.tick();
                 try io.run_for_ns(constants.tick_ms * std.time.ns_per_ms);
             }
@@ -210,7 +307,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             out.* = try std.fmt.parseInt(T, arg[name.len + 1 ..], 10);
         }
 
-        fn parse_account_flags(arg: []const u8, flags: *tb.AccountFlags) !void {
+        fn parse_account_flags(context: *Context, arg: []const u8, flags: *tb.AccountFlags) !void {
             flags.* = .{};
 
             if (!(arg.len > 6 and std.mem.eql(u8, arg[0..6], "flags:"))) {
@@ -234,7 +331,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     continue;
                 }
 
-                panic("No such account flag: {s}.\n", .{flag});
+                context.err("No such account flag: {s}.\n", .{flag});
             }
         }
 
@@ -243,6 +340,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             args: []const [:0]const u8,
             context: *Context,
         ) !void {
+            if (args.len == 0) {
+                context.err("No accounts to create.\n", .{});
+                return;
+            }
+
             var allocator = arena.allocator();
             var batch_accounts = try std.ArrayList(tb.Account).initCapacity(allocator, args.len);
 
@@ -272,7 +374,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     try parse_arg(u64, "credits_pending", part, &account.credits_pending);
                     try parse_arg(u64, "credits_posted", part, &account.credits_posted);
 
-                    try parse_account_flags(part, &account.flags);
+                    try parse_account_flags(context, part, &account.flags);
                 }
 
                 batch_accounts.appendAssumeCapacity(account);
@@ -303,7 +405,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             }
 
             if (account_ids.items.len == 0) {
-                panic("Must pass at least one id. For example: `cli lookup-accounts id:12`.", .{});
+                context.err("Must pass at least one id. For example: `cli lookup-accounts id:12`.", .{});
             }
 
             // Submit batch.
@@ -314,7 +416,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
-        fn parse_transfer_flags(arg: []const u8, flags: *tb.TransferFlags) !void {
+        fn parse_transfer_flags(context: *Context, arg: []const u8, flags: *tb.TransferFlags) !void {
             flags.* = .{};
 
             if (!(arg.len > 6 and std.mem.eql(u8, arg[0..6], "flags:"))) {
@@ -353,7 +455,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     continue;
                 }
 
-                panic("No such transfer flag: {s}.\n", .{flag});
+                context.err("No such transfer flag: {s}.\n", .{flag});
             }
         }
 
@@ -362,6 +464,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             args: []const [:0]const u8,
             context: *Context,
         ) !void {
+            if (args.len == 0) {
+                context.err("No accounts to create.\n", .{});
+                return;
+            }
+
             var allocator = arena.allocator();
             var batch_transfers = try std.ArrayList(tb.Transfer).initCapacity(allocator, args.len);
 
@@ -394,7 +501,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     try parse_arg(u16, "code", part, &transfer.code);
                     try parse_arg(u64, "amount", part, &transfer.amount);
 
-                    try parse_transfer_flags(part, &transfer.flags);
+                    try parse_transfer_flags(context, part, &transfer.flags);
                 }
 
                 batch_transfers.appendAssumeCapacity(transfer);
@@ -425,7 +532,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             }
 
             if (transfer_ids.items.len == 0) {
-                panic("Must pass at least one id. For example: `cli lookup-transfers id:12`.", .{});
+                context.err("Must pass at least one id. For example: `cli lookup-transfers id:12`.", .{});
             }
 
             // Submit batch.
@@ -441,6 +548,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             operation: StateMachine.Operation,
             payload: []u8,
         ) void {
+            context.request_done = false;
             context.message = context.client.get_message();
 
             stdx.copy_disjoint(
@@ -450,6 +558,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 payload,
             );
 
+            context.debug("Sending command: {}.\n", .{operation});
             context.client.request(
                 @intCast(u128, @ptrToInt(context)),
                 send_complete,
@@ -647,8 +756,26 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             operation: StateMachine.Operation,
             result: Client.Error![]const u8,
         ) void {
-            const result_payload = result catch |err|
-                panic("Client returned error: {}", .{err});
+            const context = @intToPtr(*Context, @intCast(u64, user_data));
+            context.debug("Command completed: {}.\n", .{operation});
+
+            defer {
+                context.request_done = true;
+                context.client.unref(context.message.?);
+                context.message = null;
+
+                if (!context.repl) {
+                    context.event_loop_done = true;
+                } else {
+                    const stdout = std.io.getStdOut().writer();
+                    stdout.print("Ok.\n", .{}) catch unreachable;
+                }
+            }
+
+            const result_payload = result catch |err| {
+                context.err("Client returned error: {}", .{err});
+                return;
+            };
 
             switch (operation) {
                 .create_accounts => {
@@ -668,7 +795,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     );
 
                     if (lookup_account_results.len == 0) {
-                        panic("No such account exists.\n", .{});
+                        context.err("No such account exists.\n", .{});
                     }
 
                     display_accounts(lookup_account_results);
@@ -690,21 +817,12 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     );
 
                     if (lookup_transfer_results.len == 0) {
-                        panic("No such transfer exists.\n", .{});
+                        context.err("No such transfer exists.\n", .{});
                     }
 
                     display_transfers(lookup_transfer_results);
                 },
                 else => unreachable,
-            }
-
-            const context = @intToPtr(*Context, @intCast(u64, user_data));
-
-            context.client.unref(context.message.?);
-            context.message = null;
-
-            if (!context.repl) {
-                context.done = true;
             }
         }
     };
