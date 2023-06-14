@@ -30,7 +30,7 @@ const usage = fmt.comptimePrint(
     \\
     \\  tigerbeetle version [--version]
     \\
-    \\  tigerbeetle client --addresses=<addressess> lookup_accounts|create_accounts|lookup_transfers|create_transfers [-h | --help]
+    \\  tigerbeetle client --addresses=<addressess> [-c|--comand="<command>"]
     \\
     \\Commands:
     \\
@@ -42,8 +42,8 @@ const usage = fmt.comptimePrint(
     \\
     \\  version  Print the TigerBeetle build version and the compile-time config values.
     \\
-    \\  client   Run commands against a TigerBeetle cluster. See
-    \\           `tigerbeetle client --help` for more information.
+    \\  client   Enter the TigerBeetle client REPL or run a command from the
+    \\           terminal using the --command flag.
     \\
     \\Options:
     \\
@@ -80,6 +80,8 @@ const usage = fmt.comptimePrint(
     \\        Print compile-time configuration along with the build version.
     \\
     \\Examples:
+    \\
+    \\  tigerbeetle client --addresses=3003,3002,3001 --command="create_accounts id=1 code=1 ledger=1"
     \\
     \\  tigerbeetle format --cluster=0 --replica=0 --replica-count=3 0_0.tigerbeetle
     \\  tigerbeetle format --cluster=0 --replica=1 --replica-count=3 0_1.tigerbeetle

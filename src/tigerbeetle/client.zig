@@ -60,25 +60,38 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             lookup_transfers,
         };
 
-        fn match_command(arg: []const u8) ?Command {
-            if (std.mem.eql(u8, arg, "create-accounts")) {
+        fn match_command(arg: []const u8) !Command {
+            if (std.mem.eql(u8, arg, "create_accounts")) {
                 return .create_accounts;
-            } else if (std.mem.eql(u8, arg, "lookup-accounts")) {
+            } else if (std.mem.eql(u8, arg, "lookup_accounts")) {
                 return .lookup_accounts;
-            } else if (std.mem.eql(u8, arg, "create-transfers")) {
+            } else if (std.mem.eql(u8, arg, "create_transfers")) {
                 return .create_transfers;
-            } else if (std.mem.eql(u8, arg, "lookup-transfers")) {
+            } else if (std.mem.eql(u8, arg, "lookup_transfers")) {
                 return .lookup_transfers;
             }
 
-            return null;
+            context.err(
+                "Command must be create_accounts, lookup_accounts, create_transfers, or lookup_transfers. Got: '{s}'.\n",
+                .{cmd_text},
+            );
+            return error.BadCommand;
         }
 
         const CommandAndArgs = struct {
             cmd: Command,
             args: []const [:0]const u8,
         };
-        pub fn parse_command_and_args(
+
+        // Statement grammar parsed here.
+        // STMT: CMD ARGS ;
+        // CMD: create_accounts | lookup_accounts | create_transfers | lookup_transfers
+        // ARGS: ARG [, ARG]
+        // ARG: KEY = VALUE
+        //
+        // For example:
+        //   create_accounts id=1 code=2 ledger=3, id = 2 code =
+        pub fn parse_statement(
             context: *Context,
             arena: *std.heap.ArenaAllocator,
             input: []const u8,
@@ -102,24 +115,14 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             var cmd: Command = .none;
             for (input[cmd_start..]) |c, i| {
-                if (c == ' ' and cmd == .none) {
+                if (std.ascii.isSpace(c) and cmd == .none) {
                     // Whitespace after the first command means we've found the first command.
                     var cmd_text = input[cmd_start .. cmd_start + i];
-                    if (match_command(cmd_text)) |cmd_| {
-                        cmd = cmd_;
-                    } else {
-                        context.err(
-                            "Command must be create-accounts, lookup-accounts, create-transfers, or lookup-transfers. Got: '{s}'.\n",
-                            .{cmd_text},
-                        );
-                        return error.BadCommand;
-                    }
+                    cmd = match_command(cmd_text);
                 }
 
                 if (cmd != .none) {
-                    // Does not handle nested quotes but that's ok
-                    // since we don't need nested quotes.
-                    if (c == '"') {
+                    if (c == ',') {
                         // Done one arg, start another
                         if (in_arg) {
                             // Make a copy of it not just to give
@@ -135,18 +138,17 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                             current_arg.clearRetainingCapacity();
                             in_arg = false;
 
-                            // Skip current "
-                            continue;
-                        } else {
-                            in_arg = true;
-
-                            // Skip current "
+                            // Skip current ,
                             continue;
                         }
                     }
                 }
 
-                // Accumulate the current arg within parens.
+                if (!in_arg and !std.ascii.isSpace(c)) {
+                    in_arg = true;
+                }
+
+                // Accumulate the current arg.
                 if (in_arg) {
                     try current_arg.append(c);
                 }
@@ -164,7 +166,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             arg: []const u8,
             out: *T,
         ) !void {
-            if (arg.len < name.len + 1 or !std.mem.eql(u8, arg[0 .. name.len + 1], name ++ ":")) {
+            if (arg.len < name.len + 1 or !std.mem.eql(u8, arg[0 .. name.len + 1], name ++ "=")) {
                 return;
             }
 
