@@ -99,7 +99,7 @@ info(io): creating "0_0.tigerbeetle"...
 info(io): allocating 660.140625MiB...
 ```
 
-And start the server.
+And start a replica.
 
 ```bash
 $ ./tigerbeetle start --addresses=3000 0_0.tigerbeetle
@@ -107,7 +107,7 @@ info(io): opening "0_0.tigerbeetle"...
 info(main): 0: cluster=0: listening on 127.0.0.1:3000
 ```
 
-Now skip ahead to [Use Node as a CLI](#use-node-as-a-cli).
+Now skip ahead to [using the CLI](#using-the-cli).
 
 ### With Docker
 
@@ -120,7 +120,7 @@ info(io): creating "0_0.tigerbeetle"...
 info(io): allocating 660.140625MiB...
 ```
 
-Then run the server.
+Then run a replica.
 
 ```bash
 $ docker run -p 3000:3000 -v $(pwd)/data:/data ghcr.io/tigerbeetledb/tigerbeetle \
@@ -134,41 +134,48 @@ command with `--cap-add IPC_LOCK` or `--ulimit memlock=-1:-1`. See
 [here](https://docs.tigerbeetle.com/deployment/with-docker#error-systemresources-on-macos) for
 more information.
 
-### The CLI
+### Using the CLI
 
-Now that you've got the server running with or without Docker, let's
-connect to the running server and do some accounting!
+Now that you've got some replicas running (with or without Docker), let's
+connect to the replicas and do some accounting!
 
 First let's create two accounts. (Don't worry about the details, you
 can read about them later.)
 
-```bash
-$ tigerbeetle client --addresses=3000 create-accounts \
-    "id:1 ledger:1 code:718" \
-	"id:2 ledger:1 code:718"
+```console
+$ tigerbeetle client --addresses=3000
+TigerBeetle Client
+  Hit enter after a semicolon to run a command.
+
+Examples:
+  create_accounts id=1 code=10 ledger=700,
+                  id=2 code=10 ledger=700;
+  create_transfers id=1 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;
+  lookup_accounts id=1;
+  lookup_accounts id=1, id=2;
+
+> create_accounts id=1 code=10 ledger=700,
+                  id=2 code=10 ledger=700;
 info(message_bus): connected to replica 0
 ```
 
 Now create a transfer of `10` (of some amount/currency) between the two accounts.
 
-```javascript
-$ tigerbeetle client --addresses=3000 create-transfers \
-    "id:1 debit_account_id:1 credit_account_id:2 ledger:1 code:718 amount:10"
-info(message_bus): connected to replica 0
+```console
+> create_transfers id=1 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;
 ```
 
 Now, the amount of `10` has been credited to account `2` and debited
 from account `1`. Let's query TigerBeetle for these two accounts to
 verify!
 
-```javascript
-$ tigerbeetle client --addresses=1025 lookup-accounts id:1 id:2
-info(message_bus): connected to replica 0
+```console
+> lookup_accounts id=1, id=2;
 {
   "id":              "1",
   "user_data":       "0",
-  "ledger":          "1",
-  "code":            "718",
+  "ledger":          "700",
+  "code":            "10",
   "flags":           "",
   "debits_pending":  "0",
   "debits_posted":   "10",
@@ -178,8 +185,8 @@ info(message_bus): connected to replica 0
 {
   "id":              "2",
   "user_data":       "0",
-  "ledger":          "1",
-  "code":            "718",
+  "ledger":          "700",
+  "code":            "10",
   "flags":           "",
   "debits_pending":  "0",
   "debits_posted":   "0",
