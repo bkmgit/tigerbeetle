@@ -131,6 +131,7 @@
 	"getenv",
         "freeset",
 	"tigerbeetlex",
-	"Jepsen"
+	"Jepsen",
+	"Dtest"
     ]
 }
