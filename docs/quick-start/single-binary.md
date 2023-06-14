@@ -106,4 +106,4 @@ info(main): 0: cluster=0: listening on 127.0.0.1:3000
 
 Now you can connect to the running server with any client. For a quick
 start, try creating accounts and transfers [using the TigerBeetle CLI
-client](./quick-start/cli-client.md).
+client](./cli-client.md).
