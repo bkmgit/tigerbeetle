@@ -90,13 +90,14 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
         };
         fn parse_identifier(input: []const u8, initial_index: usize) !ParseIdentifierResult {
             var index = eat_whitespace(input, initial_index);
+            var after_whitespace = index;
 
             while (index < input.len and (std.ascii.isAlpha(input[index]) or input[index] == '_')) {
                 index += 1;
             }
 
             return ParseIdentifierResult{
-                .string = input[initial_index..index],
+                .string = input[after_whitespace..index],
                 .next_i = index,
             };
         }
@@ -123,6 +124,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             initial_index: usize,
         ) !ParseValueResult {
             var index = eat_whitespace(input, initial_index);
+            var after_whitespace = index;
 
             while (index < input.len) {
                 const c = input[index];
@@ -134,8 +136,8 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             }
 
             return ParseValueResult{
-                .string = input[initial_index..index],
-                .next_i = index + 1,
+                .string = input[after_whitespace..index],
+                .next_i = index,
             };
         }
 
@@ -241,12 +243,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     break;
                 }
 
-                // Expect , separating key-value pairs
-                if (i >= input.len or input[i] == ',') {
-                    i = parse_syntax(input, i, ',') catch |e| {
-                        context.err("Could not find , separating key-value pairs near {}.\n", .{i});
-                        return e;
-                    };
+                // Expect comma separating objects
+                if (i < input.len and input[i] == ',') {
+                    i += 1;
 
                     var copy = try arena.allocator().create(ObjectST);
                     copy.* = object;
@@ -272,6 +271,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 var value_result = try parse_value(input, i);
                 i = value_result.next_i;
 
+                // Match key to a field in the struct.
                 match_arg(&object, id_result.string, value_result.string) catch |e| {
                     context.err(
                         "'{s}'='{s}' is not a valid pair for {s}.",
@@ -291,7 +291,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             if (has_fields) {
                 var copy = try arena.allocator().create(ObjectST);
                 copy.* = object;
-                context.debug("Found object: {any}.\n", .{copy.*});
+                context.debug("Found final object: {any}.\n", .{copy.*});
                 try args.append(copy.*);
             }
 
