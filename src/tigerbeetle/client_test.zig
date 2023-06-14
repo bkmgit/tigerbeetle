@@ -18,11 +18,11 @@ test "Parsing transfers successfully" {
     defer alloc.destroy(context);
 
     var tests = [_]struct {
-        in: []const u8,
+        comptime in: []const u8 = "",
         want: tb.Transfer,
     }{
         .{
-            .in = "id:1",
+            .in = "id=1",
             .want = tb.Transfer{
                 .id = 1,
                 .debit_account_id = 0,
@@ -39,7 +39,7 @@ test "Parsing transfers successfully" {
             },
         },
         .{
-            .in = "id:32 amount:65 ledger:12 code:9999 pending_id:7 credit_account_id:2121 debit_account_id:77 user_data:2 flags:linked",
+            .in = "id=32 amount=65 ledger=12 code=9999 pending_id=7 credit_account_id=2121 debit_account_id=77 user_data=2 flags=linked",
             .want = tb.Transfer{
                 .id = 32,
                 .debit_account_id = 77,
@@ -56,7 +56,7 @@ test "Parsing transfers successfully" {
             },
         },
         .{
-            .in = "flags:post_pending_transfer|balancing_credit|balancing_debit|void_pending_transfer|pending|linked",
+            .in = "flags=post_pending_transfer|balancing_credit|balancing_debit|void_pending_transfer|pending|linked",
             .want = tb.Transfer{
                 .id = 0,
                 .debit_account_id = 0,
@@ -82,11 +82,20 @@ test "Parsing transfers successfully" {
     };
 
     for (tests) |t| {
-        var res = Client.parse_transfer(
+        var arena = &std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+
+        var stmt = Client.parse_statement(
             context,
-            t.in,
+            arena,
+            "create_transfers " ++ t.in,
         );
-        try std.testing.expectEqual(res, t.want);
+        try std.testing.expectEqual(stmt, Client.StatementST{
+            .cmd = .create_transfers,
+            .args = &[_]Client.ObjectST{
+                .{ .transfer = t.want },
+            },
+        });
     }
 }
 
@@ -95,11 +104,11 @@ test "Parsing accounts successfully" {
     defer alloc.destroy(context);
 
     var tests = [_]struct {
-        in: []const u8,
+        comptime in: []const u8 = "",
         want: tb.Account,
     }{
         .{
-            .in = "id:1",
+            .in = "id=1",
             .want = tb.Account{
                 .id = 1,
                 .user_data = 0,
@@ -114,7 +123,7 @@ test "Parsing accounts successfully" {
             },
         },
         .{
-            .in = "id:32 credits_posted:344 ledger:12 credits_pending:18 code:9999 debits_posted:3390 debits_pending:3212 user_data:2 flags:linked",
+            .in = "id=32 credits_posted=344 ledger=12 credits_pending=18 code=9999 debits_posted=3390 debits_pending=3212 user_data=2 flags=linked",
             .want = tb.Account{
                 .id = 32,
                 .user_data = 2,
@@ -129,7 +138,7 @@ test "Parsing accounts successfully" {
             },
         },
         .{
-            .in = "flags:credits_must_not_exceed_debits|linked|debits_must_not_exceed_credits",
+            .in = "flags=credits_must_not_exceed_debits|linked|debits_must_not_exceed_credits",
             .want = tb.Account{
                 .id = 0,
                 .user_data = 0,
@@ -150,10 +159,19 @@ test "Parsing accounts successfully" {
     };
 
     for (tests) |t| {
-        var res = Client.parse_account(
+        var arena = &std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+
+        var stmt = Client.parse_statement(
             context,
-            t.in,
+            arena,
+            "create_accounts " ++ t.in,
         );
-        try std.testing.expectEqual(res, t.want);
+        try std.testing.expectEqual(stmt, Client.StatementST{
+            .cmd = .create_accounts,
+            .args = &[_]Client.ObjectST{
+                .{ .account = t.want },
+            },
+        });
     }
 }

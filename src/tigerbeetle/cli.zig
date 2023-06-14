@@ -219,6 +219,7 @@ pub fn parse_args(allocator: std.mem.Allocator) !Command {
             std.io.getStdOut().writeAll(usage) catch os.exit(1);
             os.exit(0);
         } else if (mem.startsWith(u8, arg, "-") and command != .client) {
+            std.debug.print("yo: {any}\n", .{command});
             fatal("unexpected argument: '{s}'", .{arg});
         } else if (path == null and command != .client) {
             if (!(command == .format or command == .start)) fatal("unexpected path", .{});
