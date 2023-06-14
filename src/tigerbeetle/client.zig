@@ -104,11 +104,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
         fn parse_syntax(input: []const u8, initial_index: usize, syntax: u8) !usize {
             var index = eat_whitespace(input, initial_index);
-            if (index >= input.len) {
-                return index;
-            }
-
-            if (input[index] == syntax) {
+            if (index < input.len and input[index] == syntax) {
                 return index + 1;
             }
 
@@ -261,6 +257,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 id_result = try parse_identifier(input, i);
                 i = id_result.next_i;
 
+                if (id_result.string.len == 0) {
+                    context.err("Expected identifier at {}.\n", .{i});
+                    return error.BadIdentifier;
+                }
+
                 // Grab =
                 i = parse_syntax(input, i, '=') catch |e| {
                     context.err("Could not find = in key-value pair at {}.\n", .{i});
@@ -270,6 +271,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                 // Grab value
                 var value_result = try parse_value(input, i);
                 i = value_result.next_i;
+
+                if (value_result.string.len == 0) {
+                    context.err("Expected value in key-value pair '{s}=<value>' at {}.\n", .{ id_result.string, i });
+                    return error.BadValue;
+                }
 
                 // Match key to a field in the struct.
                 match_arg(&object, id_result.string, value_result.string) catch |e| {
