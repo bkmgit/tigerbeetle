@@ -160,32 +160,27 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                                     {
                                         @field(@field(out.*, enum_field.name), field.name) = try std.fmt.parseInt(field.field_type, value, 10);
                                     }
+
+                                    // Handle flags, specific to Account and Transfer fields.
+                                    if (comptime std.mem.eql(u8, field.name, "flags") and !std.mem.eql(u8, enum_field.name, "id")) {
+                                        var flags = std.mem.split(u8, value, "|");
+                                        var f = std.mem.zeroInit(field.field_type, .{});
+                                        while (flags.next()) |flag| {
+                                            inline for (@typeInfo(field.field_type).Struct.fields) |flag_field| {
+                                                if (std.mem.eql(u8, flag_field.name, flag)) {
+                                                    if (comptime !std.mem.eql(u8, flag_field.name, "padding")) {
+                                                        @field(f, flag_field.name) = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        @field(@field(out.*, enum_field.name), "flags") = f;
+                                    }
                                 }
                             }
                         },
 
                         else => unreachable,
-                    }
-
-                    // Handle flags, specific to Account and Transfer fields.
-                    if (comptime !std.mem.eql(u8, enum_field.name, "id")) {
-                        if (std.mem.eql(u8, key, "flags")) {
-                            var flags = std.mem.split(u8, value, "|");
-
-                            const FlagT = @TypeOf(@field(@field(out.*, enum_field.name), "flags"));
-                            var f = std.mem.zeroInit(FlagT, .{});
-                            while (flags.next()) |flag| {
-                                inline for (@typeInfo(FlagT).Struct.fields) |field| {
-                                    if (std.mem.eql(u8, field.name, flag)) {
-                                        if (comptime !std.mem.eql(u8, field.name, "padding")) {
-                                            @field(f, field.name) = true;
-                                        }
-                                    }
-                                }
-                            }
-
-                            @field(@field(out.*, enum_field.name), "flags") = f;
-                        }
                     }
                 }
             }
