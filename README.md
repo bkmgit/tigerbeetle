@@ -107,7 +107,7 @@ info(io): opening "0_0.tigerbeetle"...
 info(main): 0: cluster=0: listening on 127.0.0.1:3000
 ```
 
-Now skip ahead to [using the CLI](#using-the-cli).
+Now skip ahead to [using the CLI client](#using-the-cli-client).
 
 ### With Docker
 
@@ -134,7 +134,7 @@ command with `--cap-add IPC_LOCK` or `--ulimit memlock=-1:-1`. See
 [here](https://docs.tigerbeetle.com/deployment/with-docker#error-systemresources-on-macos) for
 more information.
 
-### Using the CLI
+### Using the CLI Client
 
 Now that you've got some replicas running (with or without Docker), let's
 connect to the replicas and do some accounting!
