@@ -50,15 +50,58 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     print("[Debug] " ++ m, args);
                 }
             }
+
+            fn err_at(
+                context: *Context,
+                input: []const u8,
+                index: usize,
+                comptime m: []const u8,
+                args: anytype,
+            ) void {
+                var line_no: usize = 1;
+                var col_no: usize = 0;
+
+                var line_beginning: usize = 0;
+                var found_current_line = false;
+
+                var i: usize = 0;
+                while (i < input.len) : (i += 1) {
+                    var c = input[i];
+
+                    if (c == '\n') {
+                        if (!found_current_line) {
+                            line_beginning = i + 1;
+                            line_no += 1;
+                            col_no = 0;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        if (!found_current_line) {
+                            col_no += 1;
+                        }
+                    }
+
+                    if (i == index) {
+                        found_current_line = true;
+                    }
+                }
+
+                var line = input[line_beginning..i];
+
+                const stderr = std.io.getStdErr().writer();
+                stderr.print("Error near line {}, column {}:\n\n{s}\n", .{ line_no, col_no, line }) catch unreachable;
+                while (col_no > 0) {
+                    stderr.print(" ", .{}) catch unreachable;
+                    col_no -= 1;
+                }
+                stderr.print("^ Near here.\n\n", .{}) catch unreachable;
+
+                context.err(m, args);
+            }
         };
 
-        pub const Command = enum {
-            none,
-            create_accounts,
-            lookup_accounts,
-            create_transfers,
-            lookup_transfers,
-        };
+        pub const Command = ?StateMachine.Operation;
 
         pub const LookupST = struct {
             id: u128,
@@ -86,7 +129,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
         const ParseIdentifierResult = struct {
             string: []const u8,
-            next_i: usize,
+            next_index: usize,
         };
         fn parse_identifier(input: []const u8, initial_index: usize) !ParseIdentifierResult {
             var index = eat_whitespace(input, initial_index);
@@ -98,7 +141,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             return ParseIdentifierResult{
                 .string = input[after_whitespace..index],
-                .next_i = index,
+                .next_index = index,
             };
         }
 
@@ -113,7 +156,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
         const ParseValueResult = struct {
             string: []const u8,
-            next_i: usize,
+            next_index: usize,
         };
         fn parse_value(
             input: []const u8,
@@ -133,7 +176,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             return ParseValueResult{
                 .string = input[after_whitespace..index],
-                .next_i = index,
+                .next_index = index,
             };
         }
 
@@ -204,9 +247,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             var i: usize = 0;
             var id_result = try parse_identifier(input, i);
-            i = id_result.next_i;
+            i = id_result.next_index;
 
-            var cmd: Command = .none;
+            var cmd: Command = null;
             if (std.mem.eql(u8, id_result.string, "create_accounts")) {
                 cmd = .create_accounts;
             } else if (std.mem.eql(u8, id_result.string, "lookup_accounts")) {
@@ -224,10 +267,14 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             }
 
             var default = ObjectST{ .id = .{ .id = 0 } };
-            if (cmd == .create_accounts) {
-                default = ObjectST{ .account = std.mem.zeroInit(tb.Account, .{}) };
-            } else if (cmd == .create_transfers) {
-                default = ObjectST{ .transfer = std.mem.zeroInit(tb.Transfer, .{}) };
+            if (cmd) |c| {
+                if (c == .create_accounts) {
+                    default = ObjectST{ .account = std.mem.zeroInit(tb.Account, .{}) };
+                } else if (c == .create_transfers) {
+                    default = ObjectST{ .transfer = std.mem.zeroInit(tb.Transfer, .{}) };
+                }
+            } else {
+                unreachable;
             }
             var object = default;
 
@@ -255,31 +302,33 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
                 // Grab key
                 id_result = try parse_identifier(input, i);
-                i = id_result.next_i;
+                i = id_result.next_index;
 
                 if (id_result.string.len == 0) {
-                    context.err("Expected identifier at {}.\n", .{i});
+                    context.err_at(input, i, "Expected key starting key-value pair. e.g. `id=1`\n", .{});
                     return error.BadIdentifier;
                 }
 
                 // Grab =
                 i = parse_syntax(input, i, '=') catch |e| {
-                    context.err("Could not find = in key-value pair at {}.\n", .{i});
+                    context.err_at(input, i, "Expected equal sign after key in key-value pair. e.g. `id=1`.\n", .{});
                     return e;
                 };
 
                 // Grab value
                 var value_result = try parse_value(input, i);
-                i = value_result.next_i;
+                i = value_result.next_index;
 
                 if (value_result.string.len == 0) {
-                    context.err("Expected value in key-value pair '{s}=<value>' at {}.\n", .{ id_result.string, i });
+                    context.err_at(input, i, "Expected value after equal sign in key-value pair. e.g. `id=1`.\n", .{});
                     return error.BadValue;
                 }
 
                 // Match key to a field in the struct.
                 match_arg(&object, id_result.string, value_result.string) catch |e| {
-                    context.err(
+                    context.err_at(
+                        input,
+                        i,
                         "'{s}'='{s}' is not a valid pair for {s}.",
                         .{ id_result.string, value_result.string, @tagName(object) },
                     );
@@ -312,14 +361,20 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             arena: *std.heap.ArenaAllocator,
             stmt: StatementST,
         ) !void {
-            context.debug("Running command: {}.\n", .{stmt.cmd});
-            switch (stmt.cmd) {
-                .create_accounts => try create(tb.Account, "account", context, arena, stmt.args),
-                .lookup_accounts => try lookup("account", context, arena, stmt.args),
-                .create_transfers => try create(tb.Transfer, "transfer", context, arena, stmt.args),
-                .lookup_transfers => try lookup("transfer", context, arena, stmt.args),
-                else => err("Command not yet implemented.", .{}),
+            if (stmt.cmd) |cmd| {
+                context.debug("Running command: {}.\n", .{cmd});
+                switch (cmd) {
+                    .create_accounts => try create(tb.Account, "account", context, arena, stmt.args),
+                    .lookup_accounts => try lookup("account", context, arena, stmt.args),
+                    .create_transfers => try create(tb.Transfer, "transfer", context, arena, stmt.args),
+                    .lookup_transfers => try lookup("transfer", context, arena, stmt.args),
+                    else => unreachable,
+                }
+                return;
             }
+
+            // No input was parsed.
+            context.debug("No command was parsed, continuing.\n", .{});
         }
 
         fn repl(
@@ -350,13 +405,6 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             }
 
             var stmt = parse_statement(context, arena, input.items) catch return;
-
-            // No input was parsed.
-            if (stmt.cmd == .none) {
-                context.debug("No command was parsed, continuing.\n", .{});
-                return;
-            }
-
             try do_statement(
                 context,
                 arena,
