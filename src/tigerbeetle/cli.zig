@@ -30,7 +30,7 @@ const usage = fmt.comptimePrint(
     \\
     \\  tigerbeetle version [--version]
     \\
-    \\  tigerbeetle client --addresses=<addressess> [-c|--comand="<command>"]
+    \\  tigerbeetle client --addresses=<addressess> [--command="<command>"]
     \\
     \\Commands:
     \\
