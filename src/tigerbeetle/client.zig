@@ -245,12 +245,15 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
         ) !StatementST {
             var args = std.ArrayList(ObjectST).init(arena.allocator());
 
-            var i: usize = 0;
-            var id_result = try parse_identifier(input, i);
-            i = id_result.next_index;
+            var after_whitespace: usize = eat_whitespace(input, 0);
+            var id_result = try parse_identifier(input, after_whitespace);
+            var i = id_result.next_index;
 
             var cmd: Command = null;
-            if (std.mem.eql(u8, id_result.string, "create_accounts")) {
+            if (std.mem.eql(u8, id_result.string, "help")) {
+                display_help();
+                return error.Help;
+            } else if (std.mem.eql(u8, id_result.string, "create_accounts")) {
                 cmd = .create_accounts;
             } else if (std.mem.eql(u8, id_result.string, "lookup_accounts")) {
                 cmd = .lookup_accounts;
@@ -259,8 +262,10 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             } else if (std.mem.eql(u8, id_result.string, "lookup_transfers")) {
                 cmd = .lookup_transfers;
             } else {
-                context.err(
-                    "Command must be create_accounts, lookup_accounts, create_transfers, or lookup_transfers. Got: '{s}'.\n",
+                context.err_at(
+                    input,
+                    after_whitespace,
+                    "Command must be help, create_accounts, lookup_accounts, create_transfers, or lookup_transfers. Got: '{s}'.\n",
                     .{id_result.string},
                 );
                 return error.BadCommand;
@@ -412,6 +417,22 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
+        fn display_help() void {
+            print(
+                \\TigerBeetle CLI Client
+                \\  Hit enter after a semicolon to run a command.
+                \\
+                \\Examples:
+                \\  create_accounts id=1 code=10 ledger=700,
+                \\                  id=2 code=10 ledger=700;
+                \\  create_transfers id=1 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;
+                \\  lookup_accounts id=1;
+                \\  lookup_accounts id=1, id=2;
+                \\
+                \\
+            , .{});
+        }
+
         pub fn run(
             arena: *std.heap.ArenaAllocator,
             args: std.ArrayList([:0]const u8),
@@ -474,19 +495,7 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     do_statement(context, execution_arena, stmt) catch return;
                 }
             } else {
-                print(
-                    \\TigerBeetle Client
-                    \\  Hit enter after a semicolon to run a command.
-                    \\
-                    \\Examples:
-                    \\  create_accounts id=1 code=10 ledger=700,
-                    \\                  id=2 code=10 ledger=700;
-                    \\  create_transfers id=1 debit_account_id=1 credit_account_id=2 amount=10 ledger=700 code=10;
-                    \\  lookup_accounts id=1;
-                    \\  lookup_accounts id=1, id=2;
-                    \\
-                    \\
-                , .{});
+                display_help();
             }
 
             while (!context.event_loop_done) {
