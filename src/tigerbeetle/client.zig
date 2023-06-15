@@ -364,34 +364,6 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
-        fn display_help() void {
-            print(
-                \\TigerBeetle Client
-                \\  Terminal client for interacting with TigerBeetle.
-                \\
-                \\  Flags:
-                \\    --addresses=address[,...]  Specify TigerBeetle replica addresses.
-                \\    --help, -h                 Print this message.
-                \\    --debug, -d                Show additional debugging logs.
-                \\
-                \\  Commands:
-                \\    create_accounts            Create one or more accounts grouped by quotes, separated by spaces.
-                \\    lookup_accounts            Look up one or more accounts separated by spaces.
-                \\    create_transfers           Create one or more transfers grouped by quotes, separated by spaces.
-                \\    lookup_transfers           Look up one or more transfers separated by spaces.
-                \\    repl                       Enter an interactive REPL.
-                \\
-                \\Examples:
-                \\  $ tigerbeetle client --addresses=3000 create_accounts \
-                \\    "id:1 code:1 ledger:1" \
-                \\    "id:2 code:1 ledger:1"
-                \\  $ tigerbeetle client --addresses=3000 create_transfers \
-                \\    "id:1 debit_account_id:1 credit_account_id:2 amount:10 ledger:1 code:1"
-                \\  $ tigerbeetle client --addresses=3000 lookup_accounts "id:1"
-                \\  $ tigerbeetle client --addresses=3000 repl
-            , .{});
-        }
-
         pub fn run(
             arena: *std.heap.ArenaAllocator,
             args: std.ArrayList([:0]const u8),
@@ -404,15 +376,8 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
             for (args.items) |arg| {
                 if (arg[0] == '-') {
-                    if (std.mem.eql(u8, arg, "--debug") or
-                        std.mem.eql(u8, arg, "-d"))
-                    {
+                    if (std.mem.eql(u8, arg, "--debug")) {
                         debug = true;
-                    } else if (std.mem.eql(u8, arg, "--help") or
-                        std.mem.eql(u8, arg, "-h"))
-                    {
-                        display_help();
-                        return;
                     } else if (std.mem.startsWith(u8, arg, "--addresses=")) {
                         // Already handled by ./cli.zig
                     } else if (std.mem.startsWith(u8, arg, "--command=")) {
