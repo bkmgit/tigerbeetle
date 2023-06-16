@@ -36,6 +36,7 @@ pub fn StateMachineType(
         const Grid = @import("lsm/grid.zig").GridType(Storage);
         const GrooveType = @import("lsm/groove.zig").GrooveType;
         const ForestType = @import("lsm/forest.zig").ForestType;
+        const ScanContext = @import("lsm/scan_context.zig").ScanContextType(Storage);
 
         pub const constants = struct {
             pub const message_body_size_max = config.message_body_size_max;
@@ -279,6 +280,9 @@ pub fn StateMachineType(
         prefetch_callback: ?fn (*StateMachine) void = null,
         prefetch_context: PrefetchContext = undefined,
 
+        scan_context: ScanContext,
+        scan_count: u32 = 0,
+
         open_callback: ?fn (*StateMachine) void = null,
         compact_callback: ?fn (*StateMachine) void = null,
         checkpoint_callback: ?fn (*StateMachine) void = null,
@@ -294,10 +298,14 @@ pub fn StateMachineType(
             );
             errdefer forest.deinit(allocator);
 
+            var scan_context = try ScanContext.init(allocator);
+            errdefer scan_context.deinit(allocator);
+
             return StateMachine{
                 .prepare_timestamp = 0,
                 .commit_timestamp = 0,
                 .forest = forest,
+                .scan_context = scan_context,
                 .tracer_slot = null,
             };
         }
@@ -306,6 +314,7 @@ pub fn StateMachineType(
             assert(self.tracer_slot == null);
 
             self.forest.deinit(allocator);
+            self.scan_context.deinit(allocator);
         }
 
         pub fn Event(comptime operation: Operation) type {
@@ -397,7 +406,22 @@ pub fn StateMachineType(
                     self.prefetch_create_accounts(mem.bytesAsSlice(Account, input));
                 },
                 .create_transfers => {
-                    self.prefetch_create_transfers(mem.bytesAsSlice(Transfer, input));
+                    const transfers = mem.bytesAsSlice(Transfer, input);
+
+                    // EXPERIMENTAL:
+                    if (true) {
+                        self.forest.grooves.transfers.indexes.debit_account_id.scan.seek(
+                            &self.scan_context,
+                            self.forest.grid,
+                            &self.forest.grooves.transfers.indexes.debit_account_id,
+                            null,
+                            .{ .field = transfers[0].debit_account_id, .timestamp = 1 },
+                            .{ .field = transfers[0].debit_account_id, .timestamp = std.math.maxInt(u64) - 1 },
+                            .ascending,
+                        );
+                    }
+
+                    self.prefetch_create_transfers(transfers);
                 },
                 .lookup_accounts => {
                     self.prefetch_lookup_accounts(mem.bytesAsSlice(u128, input));
@@ -467,10 +491,39 @@ pub fn StateMachineType(
                 }
             }
 
-            self.forest.grooves.transfers.prefetch(
-                prefetch_create_transfers_callback_transfers,
-                &self.prefetch_context.transfers,
-            );
+            // EXPERIMENTAL:
+            if (true) {
+                self.forest.grooves.transfers.indexes.debit_account_id.scan.fetch(on_debit_account_id_scan_fetch);
+            } else {
+                self.forest.grooves.transfers.prefetch(
+                    prefetch_create_transfers_callback_transfers,
+                    &self.prefetch_context.transfers,
+                );
+            }
+        }
+
+        const TDebitAccountId = std.meta.fieldInfo(TransfersGroove.IndexTrees, .debit_account_id).field_type;
+        fn on_debit_account_id_scan_fetch(context: *ScanContext, value: ?TDebitAccountId.Table.Value) void {
+            // EXPERIMENTAL:
+            var self = @fieldParentPtr(StateMachine, "scan_context", context);
+            var scan = &self.forest.grooves.transfers.indexes.debit_account_id.scan;
+
+            if (value == null) {
+                scan.reset();
+                context.reset();
+                if (self.scan_count > 0) {
+                    std.log.err("Found {} transfers", .{self.scan_count});
+                    self.scan_count = 0;
+                }
+
+                self.forest.grooves.transfers.prefetch(
+                    prefetch_create_transfers_callback_transfers,
+                    &self.prefetch_context.transfers,
+                );
+            } else {
+                self.scan_count += 1;
+                scan.fetch(on_debit_account_id_scan_fetch);
+            }
         }
 
         fn prefetch_create_transfers_callback_transfers(completion: *TransfersGroove.PrefetchContext) void {

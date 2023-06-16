@@ -5,7 +5,7 @@ const mem = std.mem;
 
 const Direction = @import("direction.zig").Direction;
 
-pub fn KWayMergeIterator(
+pub fn KWayMergeIteratorType(
     comptime Context: type,
     comptime Key: type,
     comptime Value: type,
@@ -250,7 +250,7 @@ fn TestContext(comptime k_max: u32) type {
             streams_keys: []const []const u32,
             expect: []const Value,
         ) !void {
-            const KWay = KWayMergeIterator(
+            const KWay = KWayMergeIteratorType(
                 Self,
                 u32,
                 Value,

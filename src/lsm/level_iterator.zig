@@ -88,6 +88,17 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
             pub fn next(it: *LevelIndexIterator, callback: IndexBlockCallback) void {
                 assert(it.callback == .none);
 
+                // TODO: Fix range on the caller side,
+                // It's always populated with table's key_max,
+                // for scans we need a smaller range.
+                if (it.key_exclusive) |key_exclusive| {
+                    if (Table.compare_keys(key_exclusive, it.context.key_max) == .gt or Table.compare_keys(key_exclusive, it.context.key_min) == .lt) {
+                        it.callback = .{ .next_tick = callback };
+                        it.context.grid.on_next_tick(on_next_tick, &it.next_tick);
+                        return;
+                    }
+                }
+
                 // NOTE We must ensure that between calls to `next`,
                 //      no changes are made to the manifest that are visible to `it.context.snapshot`.
                 const next_table_info = it.context.manifest.next_table(
@@ -144,12 +155,17 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
             }
         };
 
-        pub const IndexFilter = enum { include, exclude };
+        pub const DataBlockAddresses = struct {
+            /// Table data block addresses.
+            addresses: []const u64,
+            /// Table data block checksums.
+            checksums: []const u128,
+        };
         pub const IndexCallback = fn (
             it: *LevelIterator,
             table_info: TableInfo,
             index_block: BlockPtrConst,
-        ) IndexFilter;
+        ) DataBlockAddresses;
         pub const DataCallback = fn (it: *LevelIterator, data_block: ?BlockPtrConst) void;
         pub const Callback = struct {
             on_index: IndexCallback,
@@ -245,30 +261,20 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
             it.callback = .none;
 
             if (index_block) |block| {
-                const index_filter = callback.on_index(it, table_info.?, block);
-                switch (index_filter) {
-                    .include => {
-                        // `index_block` is only valid for this callback, so copy it's contents.
-                        // TODO(jamii) This copy can be avoided if we bypass the cache.
-                        stdx.copy_disjoint(.exact, u8, it.index_block, block);
-
-                        it.table_data_iterator.start(.{
-                            .grid = it.context.grid,
-                            .addresses = Table.index_data_addresses_used(it.index_block),
-                            .checksums = Table.index_data_checksums_used(it.index_block),
-                        });
-
-                        it.table_data_next(callback);
-                    },
-                    .exclude => {
-                        // Skip this data block and load the next index block.
-                        it.level_index_next(callback);
-                    },
-                }
+                // `index_block` is only valid for this callback, so copy it's contents.
+                // TODO(jamii) This copy can be avoided if we bypass the cache.
+                stdx.copy_disjoint(.exact, u8, it.index_block, block);
+                const data_block_addresses = callback.on_index(it, table_info.?, it.index_block);
+                it.table_data_iterator.start(.{
+                    .grid = it.context.grid,
+                    .addresses = data_block_addresses.addresses,
+                    .checksums = data_block_addresses.checksums,
+                });
             } else {
                 // If there are no more index blocks, we can just leave `table_data_iterator` empty.
-                it.table_data_next(callback);
             }
+
+            it.table_data_next(callback);
         }
 
         inline fn table_data_next(it: *LevelIterator, callback: Callback) void {

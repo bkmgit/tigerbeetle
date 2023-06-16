@@ -102,6 +102,8 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type, comptime tree_
         const CompactionType = @import("compaction.zig").CompactionType;
         const Compaction = CompactionType(Table, Tree, Storage);
 
+        const Scan = @import("scan.zig").ScanType(Table, Tree, Storage);
+
         grid: *Grid,
         options: Options,
 
@@ -166,6 +168,8 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type, comptime tree_
         tracer_slot: ?tracer.SpanStart = null,
         filter_block_hits: u64 = 0,
         filter_block_misses: u64 = 0,
+
+        scan: Scan,
 
         pub const Options = struct {
             /// The number of objects to cache in the set-associative value cache.
@@ -238,6 +242,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type, comptime tree_
                 .compaction_callback = .none,
                 .checkpoint_callback = null,
                 .open_callback = null,
+                .scan = Scan.init(),
             };
         }
 
@@ -1136,4 +1141,8 @@ test "table_count_max_for_level/tree" {
     try expectEqual(@as(u32, 4680 + 32768), table_count_max_for_tree(8, 5));
     try expectEqual(@as(u32, 37448 + 262144), table_count_max_for_tree(8, 6));
     try expectEqual(@as(u32, 299592 + 2097152), table_count_max_for_tree(8, 7));
+}
+
+test {
+    std.testing.refAllDecls(@import("test.zig"));
 }

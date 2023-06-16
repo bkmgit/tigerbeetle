@@ -136,6 +136,83 @@ pub inline fn binary_search_keys(
     };
 }
 
+pub const BinarySearchRange = struct {
+    index_begin: u32,
+    index_end: u32,
+};
+
+pub inline fn binary_search_keys_range(
+    comptime Key: type,
+    comptime compare_keys: fn (Key, Key) callconv(.Inline) math.Order,
+    keys: []const Key,
+    key_min: Key,
+    key_max: Key,
+    comptime config: Config,
+) ?BinarySearchRange {
+    const begin = binary_search_keys_raw(
+        Key,
+        compare_keys,
+        keys,
+        key_min,
+        config,
+    );
+    if (begin == keys.len) return null;
+
+    const end = binary_search_keys_raw(
+        Key,
+        compare_keys,
+        keys,
+        key_max,
+        config,
+    );
+    if (end == begin) return null;
+
+    assert(begin < end);
+    return BinarySearchRange{
+        .index_begin = begin,
+        .index_end = end,
+    };
+}
+
+pub inline fn binary_search_values_range(
+    comptime Key: type,
+    comptime Value: type,
+    comptime key_from_value: fn (*const Value) callconv(.Inline) Key,
+    comptime compare_keys: fn (Key, Key) callconv(.Inline) math.Order,
+    values: []const Value,
+    key_min: Key,
+    key_max: Key,
+    comptime config: Config,
+) ?BinarySearchRange {
+    const begin = binary_search_values_raw(
+        Key,
+        Value,
+        key_from_value,
+        compare_keys,
+        values,
+        key_min,
+        config,
+    );
+    if (begin == values.len) return null;
+
+    const end = binary_search_values_raw(
+        Key,
+        Value,
+        key_from_value,
+        compare_keys,
+        values,
+        key_max,
+        config,
+    );
+    if (end == begin) return null;
+
+    assert(begin < end);
+    return BinarySearchRange{
+        .index_begin = begin,
+        .index_end = end,
+    };
+}
+
 const test_binary_search = struct {
     const fuzz = @import("../testing/fuzz.zig");
 

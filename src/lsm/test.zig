@@ -28,6 +28,9 @@ const Environment = struct {
         vsr.Zone.wal_prepares.size().? +
         (512 + 64) * 1024 * 1024;
 
+    const batch_size_max = constants.message_size_max - @sizeOf(vsr.Header);
+    const account_commit_entries_max = @divFloor(batch_size_max, @sizeOf(Account));
+
     const node_count = 1024;
     const cache_entries_max = 2 * 1024 * 1024;
     const forest_options = StateMachine.forest_options(.{
@@ -61,13 +64,19 @@ const Environment = struct {
     forest_exists: bool = false,
 
     fn init(env: *Environment, must_create: bool) !void {
+        _ = must_create;
         env.state = .uninit;
 
         const dir_path = ".";
         env.dir_fd = try IO.open_dir(dir_path);
         errdefer std.os.close(env.dir_fd);
 
-        env.fd = try IO.open_file(env.dir_fd, "test_forest", storage_size_max, must_create);
+        env.fd = try IO.open_file(
+            env.dir_fd,
+            "forest_test",
+            storage_size_max,
+            .create_or_open,
+        );
         errdefer std.os.close(env.fd);
 
         env.io = try IO.init(128, 0);
@@ -78,7 +87,7 @@ const Environment = struct {
 
         env.superblock = try SuperBlock.init(allocator, .{
             .storage = &env.storage,
-            .storage_size_limit = constants.storage_size_max,
+            .storage_size_limit = storage_size_max,
         });
         env.superblock_context = undefined;
         errdefer env.superblock.deinit(allocator);
@@ -127,7 +136,7 @@ const Environment = struct {
         env.superblock.format(superblock_format_callback, &env.superblock_context, .{
             .cluster = cluster,
             .replica = replica,
-            .storage_size_max = storage_size_max,
+            .replica_count = 1,
         });
 
         while (true) {
@@ -201,8 +210,9 @@ const Environment = struct {
             superblock_checkpoint_callback,
             &env.superblock_context,
             .{
-                .commit_min_checkpoint = vsr_state.commit_min_checkpoint + 1,
+                .commit_min_checksum = vsr_state.commit_min_checksum + 1,
                 .commit_min = vsr_state.commit_min + 1,
+                .commit_max = vsr_state.commit_max,
             },
         );
     }
@@ -263,7 +273,7 @@ const Environment = struct {
 
                 assertion.groove.prefetch_setup(null);
                 for (assertion.objects[0..assertion.verify_count]) |*object| {
-                    assertion.groove.prefetch_enqueue(object.id);
+                    assertion.groove.prefetch_enqueue(object.timestamp);
                 }
 
                 assertion.groove.prefetch(prefetch_callback, &assertion.prefetch_context);
@@ -275,8 +285,8 @@ const Environment = struct {
 
                 {
                     for (assertion.objects[0..assertion.verify_count]) |*object| {
-                        log.debug("verifying {} for id={}", .{ visibility, object.id });
-                        const result = assertion.groove.get(object.id);
+                        log.debug("verifying {} for timestamp={}", .{ visibility, object.timestamp });
+                        const result = assertion.groove.get(object.timestamp);
 
                         switch (visibility) {
                             .invisible => assert(result == null),
@@ -347,17 +357,35 @@ const Environment = struct {
                     .credits_posted = 42,
                 };
 
-                // Insert an account ...
-                const groove = &env.forest.grooves.accounts;
-                groove.put(&account);
+                // Insert an account immutable ...
+                {
+                    const account_immutable = StateMachine.AccountImmutable.from_account(&account);
+                    const groove = &env.forest.grooves.accounts_immutable;
+                    groove.put(&account_immutable);
 
-                // ..and make sure it can be retrieved
-                try env.assert_visibility(
-                    .visible,
-                    &env.forest.grooves.accounts,
-                    @as([]const Account, &.{account}),
-                    forest_options.accounts.tree_options_object.commit_entries_max,
-                );
+                    // ..and make sure it can be retrieved
+                    try env.assert_visibility(
+                        .visible,
+                        &env.forest.grooves.accounts_immutable,
+                        @as([]const StateMachine.AccountImmutable, &.{account_immutable}),
+                        account_commit_entries_max,
+                    );
+                }
+
+                // Insert an account muttable ...
+                {
+                    const account_mutable = StateMachine.AccountMutable.from_account(&account);
+                    const groove = &env.forest.grooves.accounts_mutable;
+                    groove.put(&StateMachine.AccountMutable.from_account(&account));
+
+                    // ..and make sure it can be retrieved
+                    try env.assert_visibility(
+                        .visible,
+                        &env.forest.grooves.accounts_mutable,
+                        @as([]const StateMachine.AccountMutable, &.{account_mutable}),
+                        account_commit_entries_max,
+                    );
+                }
 
                 // Record the successfull insertion.
                 try inserted.append(account);
@@ -398,9 +426,16 @@ const Environment = struct {
                         // Double check the forest DOES NOT contain the un-checkpointed values (negative space)
                         try env.assert_visibility(
                             .invisible,
-                            &env.forest.grooves.accounts,
+                            &env.forest.grooves.accounts_immutable,
                             uncommitted,
-                            forest_options.accounts.tree_options_object.commit_entries_max,
+                            account_commit_entries_max,
+                        );
+
+                        try env.assert_visibility(
+                            .invisible,
+                            &env.forest.grooves.accounts_mutable,
+                            uncommitted,
+                            account_commit_entries_max,
                         );
 
                         // Reset everything to after checkpoint
@@ -415,16 +450,23 @@ const Environment = struct {
                 // Double check the forest contains the checkpointed values (positive space)
                 try env.assert_visibility(
                     .visible,
-                    &env.forest.grooves.accounts,
+                    &env.forest.grooves.accounts_immutable,
                     checkpointed,
-                    forest_options.accounts.tree_options_object.commit_entries_max,
+                    account_commit_entries_max,
+                );
+
+                try env.assert_visibility(
+                    .visible,
+                    &env.forest.grooves.accounts_mutable,
+                    checkpointed,
+                    account_commit_entries_max,
                 );
             }
         }
     }
 };
 
-pub fn main() !void {
+test "forest test" {
     try Environment.format(); // NOTE: this can be commented out after first run to speed up testing.
     try Environment.run(); //try do_simple();
 }

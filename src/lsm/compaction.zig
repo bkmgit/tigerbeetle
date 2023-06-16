@@ -417,7 +417,7 @@ pub fn CompactionType(
             iterator_b: *LevelIterator,
             table_info: TableInfo,
             index_block: BlockPtrConst,
-        ) LevelIterator.IndexFilter {
+        ) LevelIterator.DataBlockAddresses {
             const compaction = @fieldParentPtr(Compaction, "iterator_b", iterator_b);
             assert(std.meta.eql(compaction.state, .{ .iterator_next = .b }));
 
@@ -439,7 +439,10 @@ pub fn CompactionType(
             grid.release(Table.index_block_address(index_block));
 
             // For compacion we want all data blocks from these tables.
-            return .include;
+            return .{
+                .addresses = Table.index_data_addresses_used(index_block),
+                .checksums = Table.index_data_checksums_used(index_block),
+            };
         }
 
         fn iterator_next_a(iterator_a: *TableDataIterator, data_block: ?BlockPtrConst) void {
