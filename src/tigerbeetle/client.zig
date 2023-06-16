@@ -316,8 +316,8 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
                 // Grab =
                 i = parse_syntax(input, i, '=') catch |e| {
-                    context.err_at(input, i, "Expected equal sign after key in key-value pair. e.g. `id=1`.\n", .{});
-                    return e;
+                    context.err_at(input, i, "Expected equal sign after key in key-value pair: {any}. e.g. `id=1`.\n", .{e});
+                    return error.MissingEqualBetweenKeyValuePair;
                 };
 
                 // Grab value
@@ -334,10 +334,10 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     context.err_at(
                         input,
                         i,
-                        "'{s}'='{s}' is not a valid pair for {s}.",
-                        .{ id_result.string, value_result.string, @tagName(object) },
+                        "'{s}'='{s}' is not a valid pair for {s}: {any}.",
+                        .{ id_result.string, value_result.string, @tagName(object), e },
                     );
-                    return e;
+                    return error.BadKeyValuePair;
                 };
                 context.debug(
                     "Set {s}.{s} = {s}.\n",

@@ -12,5 +12,6 @@ simulator
 zig/
 zig-cache/
 zig-out/
+kcov-output
 
 docs_website
