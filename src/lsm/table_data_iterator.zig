@@ -7,6 +7,7 @@ const constants = @import("../constants.zig");
 
 const stdx = @import("../stdx.zig");
 const GridType = @import("grid.zig").GridType;
+const Direction = @import("direction.zig").Direction;
 
 /// A TableDataIterator iterates a table's data blocks in ascending key order.
 pub fn TableDataIteratorType(comptime Storage: type) type {
@@ -24,6 +25,7 @@ pub fn TableDataIteratorType(comptime Storage: type) type {
             addresses: []const u64,
             /// Table data block checksums.
             checksums: []const u128,
+            direction: Direction,
         };
 
         context: Context,
@@ -46,6 +48,7 @@ pub fn TableDataIteratorType(comptime Storage: type) type {
                     // and get `null` rather than UB.
                     .addresses = &.{},
                     .checksums = &.{},
+                    .direction = .ascending,
                 },
                 .callback = .none,
                 .read = undefined,
@@ -79,10 +82,22 @@ pub fn TableDataIteratorType(comptime Storage: type) type {
             assert(it.callback == .none);
 
             if (it.context.addresses.len > 0) {
-                const address = it.context.addresses[0];
-                const checksum = it.context.checksums[0];
+                const read: struct {
+                    address: u64,
+                    checksum: u128,
+                } = switch (it.context.direction) {
+                    .ascending => .{
+                        .address = it.context.addresses[0],
+                        .checksum = it.context.checksums[0],
+                    },
+                    .descending => .{
+                        .address = it.context.addresses[it.context.addresses.len - 1],
+                        .checksum = it.context.checksums[it.context.checksums.len - 1],
+                    },
+                };
+
                 it.callback = .{ .read = callback };
-                it.context.grid.read_block(on_read, &it.read, address, checksum, .data);
+                it.context.grid.read_block(on_read, &it.read, read.address, read.checksum, .data);
             } else {
                 it.callback = .{ .next_tick = callback };
                 it.context.grid.on_next_tick(on_next_tick, &it.next_tick);
@@ -95,8 +110,16 @@ pub fn TableDataIteratorType(comptime Storage: type) type {
 
             const callback = it.callback.read;
             it.callback = .none;
-            it.context.addresses = it.context.addresses[1..];
-            it.context.checksums = it.context.checksums[1..];
+            switch (it.context.direction) {
+                .ascending => {
+                    it.context.addresses = it.context.addresses[1..];
+                    it.context.checksums = it.context.checksums[1..];
+                },
+                .descending => {
+                    it.context.addresses = it.context.addresses[0 .. it.context.addresses.len - 1];
+                    it.context.checksums = it.context.checksums[0 .. it.context.checksums.len - 1];
+                },
+            }
 
             callback(it, block);
         }

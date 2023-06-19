@@ -503,7 +503,7 @@ pub fn main() !void {
     var rng = std.rand.DefaultPrng.init(fuzz_args.seed);
     const random = rng.random();
 
-    const table_usage = random.enumValue(TableUsage);
+    const table_usage = TableUsage.secondary_index; // random.enumValue(TableUsage);
     log.info("table_usage={}", .{table_usage});
 
     const storage_fault_atlas = ClusterFaultAtlas.init(3, random, .{

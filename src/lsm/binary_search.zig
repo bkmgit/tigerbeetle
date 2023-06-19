@@ -137,8 +137,8 @@ pub inline fn binary_search_keys(
 }
 
 pub const BinarySearchRange = struct {
-    index_begin: u32,
-    index_end: u32,
+    start: u32,
+    count: u32,
 };
 
 pub inline fn binary_search_keys_range(
@@ -148,30 +148,21 @@ pub inline fn binary_search_keys_range(
     key_min: Key,
     key_max: Key,
     comptime config: Config,
-) ?BinarySearchRange {
-    const begin = binary_search_keys_raw(
+) BinarySearchRange {
+    return binary_search_values_range(
         Key,
+        Key,
+        struct {
+            inline fn key_from_key(k: *const Key) Key {
+                return k.*;
+            }
+        }.key_from_key,
         compare_keys,
         keys,
         key_min,
-        config,
-    );
-    if (begin == keys.len) return null;
-
-    const end = binary_search_keys_raw(
-        Key,
-        compare_keys,
-        keys,
         key_max,
         config,
     );
-    if (end == begin) return null;
-
-    assert(begin < end);
-    return BinarySearchRange{
-        .index_begin = begin,
-        .index_end = end,
-    };
 }
 
 pub inline fn binary_search_values_range(
@@ -183,8 +174,8 @@ pub inline fn binary_search_values_range(
     key_min: Key,
     key_max: Key,
     comptime config: Config,
-) ?BinarySearchRange {
-    const begin = binary_search_values_raw(
+) BinarySearchRange {
+    const start = binary_search_values_raw(
         Key,
         Value,
         key_from_value,
@@ -193,9 +184,15 @@ pub inline fn binary_search_values_range(
         key_min,
         config,
     );
-    if (begin == values.len) return null;
 
-    const end = binary_search_values_raw(
+    // We want to return a valid index,
+    // so it can always be safe to use it to slice an array.
+    if (start == values.len) return .{
+        .start = start -| 1,
+        .count = 0,
+    };
+
+    const end = binary_search_values(
         Key,
         Value,
         key_from_value,
@@ -204,12 +201,11 @@ pub inline fn binary_search_values_range(
         key_max,
         config,
     );
-    if (end == begin) return null;
 
-    assert(begin < end);
-    return BinarySearchRange{
-        .index_begin = begin,
-        .index_end = end,
+    assert(start <= end.index);
+    return .{
+        .start = start,
+        .count = end.index - start + @boolToInt(end.exact),
     };
 }
 
@@ -333,6 +329,21 @@ const test_binary_search = struct {
         try std.testing.expectEqual(expect.index, actual.index);
         try std.testing.expectEqual(expect.exact, actual.exact);
     }
+
+    pub fn range_search(
+        keys: []const u32,
+        key_min: u32,
+        key_max: u32,
+    ) BinarySearchRange {
+        return binary_search_keys_range(
+            u32,
+            compare_keys,
+            keys,
+            key_min,
+            key_max,
+            .{ .verify = true },
+        );
+    }
 };
 
 // TODO test search on empty slice
@@ -414,5 +425,102 @@ test "binary search: random" {
     var i: usize = 0;
     while (i < 2048) : (i += 1) {
         try test_binary_search.random_search(rng.random(), i);
+    }
+}
+
+test "binary search: range" {
+    if (test_binary_search.log) std.debug.print("\n", .{});
+
+    const sequence = &[_]u32{ 3, 4, 10, 15, 20, 25, 30, 100, 1000 };
+
+    {
+        const range = test_binary_search.range_search(
+            sequence,
+            sequence[0],
+            sequence[sequence.len - 1],
+        );
+        try std.testing.expect(range.count == sequence.len);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+        try std.testing.expectEqualSlices(u32, sequence, slice);
+    }
+
+    {
+        const range = test_binary_search.range_search(sequence, 2, 5);
+        try std.testing.expect(range.count == 2);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+        try std.testing.expectEqualSlices(u32, &[_]u32{ 3, 4 }, slice);
+    }
+
+    {
+        const range = test_binary_search.range_search(sequence, 5, 10);
+        try std.testing.expect(range.count == 1);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+        try std.testing.expectEqualSlices(u32, &[_]u32{10}, slice);
+    }
+
+    {
+        const range = test_binary_search.range_search(sequence, 5, 14);
+        try std.testing.expect(range.count == 1);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+        try std.testing.expectEqualSlices(u32, &[_]u32{10}, slice);
+    }
+
+    {
+        const range = test_binary_search.range_search(sequence, 10, 10);
+        try std.testing.expect(range.count == 1);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+        try std.testing.expectEqualSlices(u32, &[_]u32{10}, slice);
+    }
+
+    {
+        const range = test_binary_search.range_search(sequence, 30, 100);
+        try std.testing.expect(range.count == 2);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+        try std.testing.expectEqualSlices(u32, &[_]u32{ 30, 100 }, slice);
+    }
+
+    {
+        const range = test_binary_search.range_search(sequence, 1, 2);
+        try std.testing.expect(range.count == 0);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+    }
+
+    {
+        const range = test_binary_search.range_search(sequence, 101, 999);
+        try std.testing.expect(range.count == 0);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+    }
+
+    {
+        const range = test_binary_search.range_search(sequence, 1_001, 10_000);
+        try std.testing.expect(range.count == 0);
+
+        const slice = sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
+    }
+
+    {
+        const empty_sequence = &[_]u32{};
+        const range = test_binary_search.range_search(empty_sequence, 1, 2);
+        try std.testing.expect(range.count == 0);
+
+        const slice = empty_sequence[range.start..][0..range.count];
+        try std.testing.expect(slice.len == range.count);
     }
 }

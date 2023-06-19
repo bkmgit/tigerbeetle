@@ -370,6 +370,7 @@ pub fn CompactionType(
                 .grid = compaction.context.grid,
                 .addresses = Table.index_data_addresses_used(compaction.index_block_a),
                 .checksums = Table.index_data_checksums_used(compaction.index_block_a),
+                .direction = .ascending,
             });
 
             compaction.state = .compacting;

@@ -272,6 +272,9 @@ pub fn StateMachineType(
             }
         };
 
+        // EXPERIMENTAL:
+        const TDebitAccountId = std.meta.fieldInfo(TransfersGroove.IndexTrees, .debit_account_id).field_type;
+
         prepare_timestamp: u64,
         commit_timestamp: u64,
         forest: Forest,
@@ -280,8 +283,10 @@ pub fn StateMachineType(
         prefetch_callback: ?fn (*StateMachine) void = null,
         prefetch_context: PrefetchContext = undefined,
 
+        // EXPERIMENTAL:
         scan_context: ScanContext,
         scan_count: u32 = 0,
+        scan_value_last: ?TDebitAccountId.Table.Value = null,
 
         open_callback: ?fn (*StateMachine) void = null,
         compact_callback: ?fn (*StateMachine) void = null,
@@ -414,10 +419,10 @@ pub fn StateMachineType(
                             &self.scan_context,
                             self.forest.grid,
                             &self.forest.grooves.transfers.indexes.debit_account_id,
-                            null,
+                            snapshot_latest,
                             .{ .field = transfers[0].debit_account_id, .timestamp = 1 },
                             .{ .field = transfers[0].debit_account_id, .timestamp = std.math.maxInt(u64) - 1 },
-                            .ascending,
+                            .descending,
                         );
                     }
 
@@ -502,27 +507,42 @@ pub fn StateMachineType(
             }
         }
 
-        const TDebitAccountId = std.meta.fieldInfo(TransfersGroove.IndexTrees, .debit_account_id).field_type;
-        fn on_debit_account_id_scan_fetch(context: *ScanContext, value: ?TDebitAccountId.Table.Value) void {
+        fn on_debit_account_id_scan_fetch(context: *ScanContext, value_maybe: ?TDebitAccountId.Table.Value) void {
             // EXPERIMENTAL:
             var self = @fieldParentPtr(StateMachine, "scan_context", context);
             var scan = &self.forest.grooves.transfers.indexes.debit_account_id.scan;
 
-            if (value == null) {
+            if (value_maybe) |value| {
+                // Asserting if we are iterating in the expected direction.
+                if (self.scan_value_last) |last| {
+                    const order = TDebitAccountId.Table.compare_keys(
+                        TDebitAccountId.Table.key_from_value(&value),
+                        TDebitAccountId.Table.key_from_value(&last),
+                    );
+                    const expected: math.Order = switch (scan.direction) {
+                        .ascending => .gt,
+                        .descending => .lt,
+                    };
+                    assert(order == expected);
+                }
+
+                self.scan_count += 1;
+                self.scan_value_last = value;
+                scan.fetch(on_debit_account_id_scan_fetch);
+            } else {
                 scan.reset();
                 context.reset();
                 if (self.scan_count > 0) {
                     std.log.err("Found {} transfers", .{self.scan_count});
                     self.scan_count = 0;
+                    self.scan_value_last = null;
                 }
 
+                // Resume prefetching transfers.
                 self.forest.grooves.transfers.prefetch(
                     prefetch_create_transfers_callback_transfers,
                     &self.prefetch_context.transfers,
                 );
-            } else {
-                self.scan_count += 1;
-                scan.fetch(on_debit_account_id_scan_fetch);
             }
         }
 

@@ -72,10 +72,6 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
 
             pub fn start(it: *LevelIndexIterator, context: *const Context) void {
                 assert(it.callback == .none);
-                if (context.direction == .descending) {
-                    @panic("TODO Implement descending direction for LevelIndexIterator.");
-                }
-
                 it.* = .{
                     .context = context,
                     .key_exclusive = null,
@@ -217,6 +213,7 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
                 .grid = context.grid,
                 .addresses = &.{},
                 .checksums = &.{},
+                .direction = context.direction,
             });
         }
 
@@ -269,6 +266,7 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
                     .grid = it.context.grid,
                     .addresses = data_block_addresses.addresses,
                     .checksums = data_block_addresses.checksums,
+                    .direction = it.context.direction,
                 });
             } else {
                 // If there are no more index blocks, we can just leave `table_data_iterator` empty.

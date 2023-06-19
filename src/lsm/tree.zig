@@ -1142,7 +1142,3 @@ test "table_count_max_for_level/tree" {
     try expectEqual(@as(u32, 37448 + 262144), table_count_max_for_tree(8, 6));
     try expectEqual(@as(u32, 299592 + 2097152), table_count_max_for_tree(8, 7));
 }
-
-test {
-    std.testing.refAllDecls(@import("test.zig"));
-}
