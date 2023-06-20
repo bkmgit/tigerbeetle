@@ -1,3 +1,5 @@
+// Utilities to help in writing scripts for builds/testing.
+
 const builtin = @import("builtin");
 const std = @import("std");
 
@@ -82,10 +84,6 @@ pub fn shell_wrap(arena: *std.heap.ArenaAllocator, cmd: []const u8) ![]const []c
     if (builtin.os.tag == .windows) {
         try wrapped.append(try std.fmt.allocPrint(
             arena.allocator(),
-            // \\Set-StrictMode -Version 3;
-            // \\$ErrorActionPreference = 'Stop';
-            // \\$PSDefaultParameterValues['*:ErrorAction']='Stop';
-            // \\$LASTEXITCODE = 0;
             \\
             \\{s}
         ,
@@ -96,13 +94,6 @@ pub fn shell_wrap(arena: *std.heap.ArenaAllocator, cmd: []const u8) ![]const []c
                 ";",
                 "; if(!$?) { Exit $LASTEXITCODE }; ",
             )},
-            // .{try std.mem.replaceOwned(
-            //     u8,
-            //     arena.allocator(),
-            //     cmd,
-            //     "\"",
-            //     "\\\"",
-            // )},
         ));
     } else {
         try wrapped.append(cmd);
@@ -209,9 +200,20 @@ pub fn script_filename(arena: *std.heap.ArenaAllocator, parts: []const []const u
 pub fn binary_filename(arena: *std.heap.ArenaAllocator, parts: []const []const u8) ![]const u8 {
     var file_name = std.ArrayList(u8).init(arena.allocator());
     const sep = if (builtin.os.tag == .windows) '\\' else '/';
-    _ = try file_name.append('.');
-    for (parts) |part| {
-        _ = try file_name.append(sep);
+    for (parts) |part, i| {
+        var skip_sep = false;
+        if (i == 0) {
+            if (part[0] != '/') {
+                _ = try file_name.append('.');
+            } else {
+                skip_sep = true;
+            }
+        }
+
+        if (!skip_sep) {
+            _ = try file_name.append(sep);
+        }
+
         _ = try file_name.appendSlice(part);
     }
 
@@ -242,4 +244,14 @@ pub fn write_shell_newlines_into_single_line(
 
     // The above commands all end with ` {cmd_sep} `
     try into.appendSlice("echo ok");
+}
+
+pub fn read_file(arena: *std.heap.ArenaAllocator, file_name: []const u8) ![]const u8 {
+    const file = try std.fs.cwd().openFile(file_name, .{});
+    defer file.close();
+
+    const file_size = try file.getEndPos();
+    var contents = try arena.allocator().alloc(u8, file_size);
+    _ = try file.read(contents);
+    return contents;
 }

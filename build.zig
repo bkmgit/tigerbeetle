@@ -301,6 +301,11 @@ pub fn build(b: *std.build.Builder) void {
             mode,
             target,
         );
+        cli_client_integration(
+            b,
+            mode,
+            target,
+        );
     }
 
     {
@@ -952,4 +957,19 @@ fn client_docs(
     client_docs_build.dependOn(&install_step.step);
 
     maybe_execute(b, allocator, client_docs_build, "client_docs");
+}
+
+fn cli_client_integration(
+    b: *std.build.Builder,
+    mode: Mode,
+    target: CrossTarget,
+) void {
+    const cli_client_integration_build = b.step("cli_client_integration", "Build cli client integration test script.");
+    const binary = b.addExecutable("cli_client_integration", "src/clients/cli_client_integration.zig");
+    binary.setBuildMode(mode);
+    binary.setTarget(target);
+    cli_client_integration_build.dependOn(&binary.step);
+
+    const install_step = b.addInstallArtifact(binary);
+    cli_client_integration_build.dependOn(&install_step.step);
 }

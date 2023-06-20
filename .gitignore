@@ -13,5 +13,6 @@ zig/
 zig-cache/
 zig-out/
 kcov-output
+integration-test-dir
 
 docs_website

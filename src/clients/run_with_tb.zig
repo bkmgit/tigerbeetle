@@ -40,6 +40,10 @@ fn free_port() !u16 {
 }
 
 pub fn run_with_tb(arena: *std.heap.ArenaAllocator, commands: []const []const u8, cwd: []const u8) !void {
+    try run_many_with_tb(arena, &[_][]const []const u8{commands}, cwd);
+}
+
+pub fn run_many_with_tb(arena: *std.heap.ArenaAllocator, commands: [][]const []const u8, cwd: []const u8) !void {
     const root = try git_root(arena);
 
     std.debug.print("Moved to git root: {s}\n", .{root});
@@ -95,14 +99,14 @@ pub fn run_with_tb(arena: *std.heap.ArenaAllocator, commands: []const []const u8
     }
     try cp.spawn();
 
-    std.debug.print("Running commands: {s}\n", .{commands});
-
     try std.os.chdir(cwd);
 
-    try run_with_env(arena, commands, &[_][]const u8{
-        "TB_ADDRESS",
-        try std.fmt.allocPrint(arena.allocator(), "{}", .{port}),
-    });
+    for (commands) |cmds| {
+        try run_with_env(arena, cmds, &[_][]const u8{
+            "TB_ADDRESS",
+            try std.fmt.allocPrint(arena.allocator(), "{}", .{port}),
+        });
+    }
 }
 
 fn error_main() !void {
