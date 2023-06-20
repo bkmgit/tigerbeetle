@@ -429,6 +429,14 @@ test "client.zig: Handle parsing errors" {
             .err = error.BadCommand,
         },
         .{
+            .in = 
+            \\
+            \\
+            \\ create
+            ,
+            .err = error.BadCommand,
+        },
+        .{
             .in = "create_transfers 12",
             .err = error.BadIdentifier,
         },

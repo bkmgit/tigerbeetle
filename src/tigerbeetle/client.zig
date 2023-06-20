@@ -188,40 +188,34 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             inline for (@typeInfo(ObjectST).Union.fields) |enum_field| {
                 if (std.mem.eql(u8, @tagName(out.*), enum_field.name)) {
                     var sub = @field(out, enum_field.name);
-                    const T = @TypeOf(sub);
+                    const SubT = @TypeOf(sub);
 
-                    switch (@typeInfo(T)) {
-                        .Struct => |structInfo| {
-                            inline for (structInfo.fields) |field| {
-                                if (std.mem.eql(u8, field.name, key)) {
-                                    // Handle everything but flags, skip reserved and timestamp.
-                                    if (comptime (!std.mem.eql(u8, field.name, "flags") and
-                                        !std.mem.eql(u8, field.name, "reserved") and
-                                        !std.mem.eql(u8, field.name, "timestamp")))
-                                    {
-                                        @field(@field(out.*, enum_field.name), field.name) = try std.fmt.parseInt(field.field_type, value, 10);
-                                    }
+                    inline for (@typeInfo(SubT).Struct.fields) |field| {
+                        if (std.mem.eql(u8, field.name, key)) {
+                            // Handle everything but flags, skip reserved and timestamp.
+                            if (comptime (!std.mem.eql(u8, field.name, "flags") and
+                                !std.mem.eql(u8, field.name, "reserved") and
+                                !std.mem.eql(u8, field.name, "timestamp")))
+                            {
+                                @field(@field(out.*, enum_field.name), field.name) = try std.fmt.parseInt(field.field_type, value, 10);
+                            }
 
-                                    // Handle flags, specific to Account and Transfer fields.
-                                    if (comptime std.mem.eql(u8, field.name, "flags") and !std.mem.eql(u8, enum_field.name, "id")) {
-                                        var flags = std.mem.split(u8, value, "|");
-                                        var f = std.mem.zeroInit(field.field_type, .{});
-                                        while (flags.next()) |flag| {
-                                            inline for (@typeInfo(field.field_type).Struct.fields) |flag_field| {
-                                                if (std.mem.eql(u8, flag_field.name, flag)) {
-                                                    if (comptime !std.mem.eql(u8, flag_field.name, "padding")) {
-                                                        @field(f, flag_field.name) = true;
-                                                    }
-                                                }
+                            // Handle flags, specific to Account and Transfer fields.
+                            if (comptime std.mem.eql(u8, field.name, "flags") and !std.mem.eql(u8, enum_field.name, "id")) {
+                                var flags = std.mem.split(u8, value, "|");
+                                var f = std.mem.zeroInit(field.field_type, .{});
+                                while (flags.next()) |flag| {
+                                    inline for (@typeInfo(field.field_type).Struct.fields) |flag_field| {
+                                        if (std.mem.eql(u8, flag_field.name, flag)) {
+                                            if (comptime !std.mem.eql(u8, flag_field.name, "padding")) {
+                                                @field(f, flag_field.name) = true;
                                             }
                                         }
-                                        @field(@field(out.*, enum_field.name), "flags") = f;
                                     }
                                 }
+                                @field(@field(out.*, enum_field.name), "flags") = f;
                             }
-                        },
-
-                        else => unreachable,
+                        }
                     }
                 }
             }
@@ -590,61 +584,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             );
         }
 
-        fn display_account_flags(flags: tb.AccountFlags) void {
-            if (flags.linked) {
-                print("linked", .{});
-            }
-
-            if (flags.debits_must_not_exceed_credits) {
-                if (flags.linked) {
-                    print("|", .{});
-                }
-
-                print("debits_must_not_exceed_credits", .{});
-            }
-
-            if (flags.credits_must_not_exceed_debits) {
-                if (flags.linked or flags.debits_must_not_exceed_credits) {
-                    print("|", .{});
-                }
-
-                print("credits_must_not_exceed_debits", .{});
-            }
-        }
-
         fn display_accounts(accounts: []align(1) const tb.Account) void {
             for (accounts) |account| {
-                print(
-                    \\{{
-                    \\  "id":              "{}",
-                    \\  "user_data":       "{}",
-                    \\  "ledger":          "{}",
-                    \\  "code":            "{}",
-                    \\  "flags":           "
-                , .{
-                    account.id,
-                    account.user_data,
-                    account.ledger,
-                    account.code,
-                });
-
-                display_account_flags(account.flags);
-
-                print("\",\n", .{});
-
-                print(
-                    \\  "debits_pending":  "{}",
-                    \\  "debits_posted":   "{}",
-                    \\  "credits_pending": "{}",
-                    \\  "credits_posted":  "{}"
-                    \\}}
-                    \\
-                , .{
-                    account.debits_pending,
-                    account.debits_posted,
-                    account.credits_pending,
-                    account.credits_posted,
-                });
+                display_object(account);
             }
         }
 
@@ -657,98 +599,48 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             }
         }
 
-        fn display_transfer_flags(flags: tb.TransferFlags) void {
-            if (flags.linked) {
-                print("linked", .{});
-            }
-
-            if (flags.pending) {
-                if (flags.linked) {
-                    print("|", .{});
+        fn display_object(object: anytype) void {
+            const T = @TypeOf(object);
+            print("{{\n", .{});
+            inline for (@typeInfo(T).Struct.fields) |s_field, i| {
+                if (comptime std.mem.eql(u8, s_field.name, "reserved")) {
+                    continue;
+                    // No need to print out reserved.
                 }
 
-                print("pending", .{});
-            }
-
-            if (flags.post_pending_transfer) {
-                if (flags.linked or flags.pending) {
-                    print("|", .{});
+                if (i > 0) {
+                    print(",\n", .{});
                 }
 
-                print("post_pending_transfer", .{});
-            }
+                if (comptime std.mem.eql(u8, s_field.name, "flags")) {
+                    print("  \"" ++ s_field.name ++ "\": [", .{});
+                    var needs_comma = false;
 
-            if (flags.void_pending_transfer) {
-                if (flags.linked or flags.pending or flags.post_pending_transfer) {
-                    print("|", .{});
+                    inline for (@typeInfo(s_field.field_type).Struct.fields) |flag_field| {
+                        if (comptime !std.mem.eql(u8, flag_field.name, "padding")) {
+                            if (@field(@field(object, "flags"), flag_field.name)) {
+                                if (needs_comma) {
+                                    print(",", .{});
+                                    needs_comma = false;
+                                }
+
+                                print("\"" ++ flag_field.name ++ "\"", .{});
+                                needs_comma = true;
+                            }
+                        }
+                    }
+
+                    print("]", .{});
+                } else {
+                    print("  \"" ++ s_field.name ++ "\": \"{}\"", .{@field(object, s_field.name)});
                 }
-
-                print("void_pending_transfer", .{});
             }
-
-            if (flags.balancing_debit) {
-                if (flags.linked or
-                    flags.pending or
-                    flags.post_pending_transfer or
-                    flags.void_pending_transfer)
-                {
-                    print("|", .{});
-                }
-
-                print("balancing_debit", .{});
-            }
-
-            if (flags.balancing_credit) {
-                if (flags.linked or
-                    flags.pending or
-                    flags.post_pending_transfer or
-                    flags.void_pending_transfer or
-                    flags.balancing_debit)
-                {
-                    print("|", .{});
-                }
-
-                print("balancing_credit", .{});
-            }
+            print("\n}}\n", .{});
         }
 
         fn display_transfers(transfers: []align(1) const tb.Transfer) void {
             for (transfers) |transfer| {
-                print(
-                    \\{{
-                    \\  "id":                "{}",
-                    \\  "debit_account_id":  "{}",
-                    \\  "credit_account_id": "{}",
-                    \\  "user_data":         "{}",
-                    \\  "pending_id":        "{}",
-                    \\  "timeout":           "{}",
-                    \\  "ledger":            "{}",
-                    \\  "code":              "{}",
-                    \\  "flags":             "
-                , .{
-                    transfer.id,
-                    transfer.debit_account_id,
-                    transfer.credit_account_id,
-                    transfer.user_data,
-                    transfer.pending_id,
-                    transfer.timeout,
-                    transfer.ledger,
-                    transfer.code,
-                });
-
-                display_transfer_flags(transfer.flags);
-
-                print("\",\n", .{});
-
-                print(
-                    \\  "amount":            "{}",
-                    \\  "timestamp":         "{}",
-                    \\}}
-                    \\
-                , .{
-                    transfer.amount,
-                    transfer.timestamp,
-                });
+                display_object(transfer);
             }
         }
 
@@ -803,9 +695,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
                     if (lookup_account_results.len == 0) {
                         context.err("No such account exists.\n", .{});
+                    } else {
+                        for (lookup_account_results) |account| {
+                            display_object(account);
+                        }
                     }
-
-                    display_accounts(lookup_account_results);
                 },
                 .create_transfers => {
                     const create_transfer_results = std.mem.bytesAsSlice(
@@ -825,9 +719,11 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
 
                     if (lookup_transfer_results.len == 0) {
                         context.err("No such transfer exists.\n", .{});
+                    } else {
+                        for (lookup_transfer_results) |transfer| {
+                            display_object(transfer);
+                        }
                     }
-
-                    display_transfers(lookup_transfer_results);
                 },
                 else => unreachable,
             }
