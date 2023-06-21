@@ -8,6 +8,11 @@ const run_shell = @import("./shutil.zig").run_shell;
 const binary_filename = @import("./shutil.zig").binary_filename;
 const run_many_with_tb = @import("./run_with_tb.zig").run_many_with_tb;
 
+const tb_client_command_base =
+    "{s} client --addresses=$" ++
+    (if (builtin.os.tag == .windows) "env:") ++
+    "TB_ADDRESS --command=\"{s}\"";
+
 fn tb_client_command(
     arena: *std.heap.ArenaAllocator,
     tb_binary: []const u8,
@@ -17,8 +22,7 @@ fn tb_client_command(
         arena,
         try std.fmt.allocPrint(
             arena.allocator(),
-            \\{s} client --addresses=$TB_ADDRESS --command="{s}"
-        ,
+            tb_client_command_base,
             .{ tb_binary, command },
         ),
     );
@@ -34,8 +38,7 @@ fn tb_client_command_json_out(
         arena,
         try std.fmt.allocPrint(
             arena.allocator(),
-            \\{s} client --addresses=$TB_ADDRESS --command="{s}" | jq "del(.timestamp)" > {s}
-        ,
+            tb_client_command_base ++ " | jq \"del(.timestamp)\" > {s}",
             .{ tb_binary, command, out_name },
         ),
     );
