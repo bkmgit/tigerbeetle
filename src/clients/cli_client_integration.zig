@@ -10,7 +10,7 @@ const run_many_with_tb = @import("./run_with_tb.zig").run_many_with_tb;
 
 const tb_client_command_base =
     "{s} client --addresses=$" ++
-    (if (builtin.os.tag == .windows) "env:") ++
+    (if (builtin.os.tag == .windows) "env:" else "") ++
     "TB_ADDRESS --command=\"{s}\"";
 
 fn tb_client_command(
@@ -105,7 +105,7 @@ fn test_basic_accounts_and_transfers(
 
     var expected_transfer =
         \\{
-        \\  "id": "2",
+        \\  "id": "1",
         \\  "debit_account_id": "1",
         \\  "credit_account_id": "2",
         \\  "user_data": "0",
