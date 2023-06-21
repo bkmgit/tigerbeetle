@@ -727,7 +727,9 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                         }
                     }
                 },
-                else => unreachable,
+                else => {
+                    print("Unsupported command: {any}.\n", .{operation});
+                },
             }
         }
     };
