@@ -21,6 +21,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
-      - run: .\scripts\install_zig.bat
+      - run: .\scripts\install.bat
       - run: .\scripts\build.bat cli_client_integration
       - run: .\zig-out\bin\cli_client_integration.exe
