@@ -460,6 +460,8 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
             context.event_loop_done = false;
             context.repl = statements == null;
 
+            context.debug("Connecting to '{s}'.\n", .{addresses});
+
             const client_id = std.crypto.random.int(u128);
             const cluster_id: u32 = 0;
 

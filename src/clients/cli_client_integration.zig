@@ -54,15 +54,18 @@ fn fail_on_diff(
         arena,
         try std.fmt.allocPrint(arena.allocator(), "{s}/{s}", .{ tmp_dir, out_name }),
     );
+    const wanted = std.mem.trim(u8, expected, " \n\t");
+    const got = std.mem.trim(u8, out_file, " \n\t");
     if (!std.mem.eql(
         u8,
-        std.mem.trim(u8, out_file, " \n\t"),
-        std.mem.trim(u8, expected, " \n\t"),
+        wanted,
+        got,
     )) {
         std.debug.print(
             "Mismatch.\nWanted:\n{s}\n\nGot:\n{s}\n",
-            .{ expected, out_file },
+            .{ wanted, got },
         );
+        std.debug.print("First character: '{}', second: '{}'",.{got[0], got[1]});
         std.os.exit(1);
     }
 }
