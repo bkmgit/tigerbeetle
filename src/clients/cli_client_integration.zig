@@ -65,7 +65,7 @@ fn fail_on_diff(
             "Mismatch.\nWanted:\n{s}\n\nGot:\n{s}\n",
             .{ wanted, got },
         );
-        std.debug.print("First character: '{}', second: '{}'",.{got[0], got[1]});
+        std.debug.print("First character: '{}', second: '{}'", .{ got[0], got[1] });
         std.os.exit(1);
     }
 }
