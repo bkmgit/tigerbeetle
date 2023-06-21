@@ -369,7 +369,6 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                     .lookup_accounts => try lookup("account", context, arena, stmt.args),
                     .create_transfers => try create(tb.Transfer, "transfer", context, arena, stmt.args),
                     .lookup_transfers => try lookup("transfer", context, arena, stmt.args),
-                    else => unreachable,
                 }
                 return;
             }
@@ -726,9 +725,6 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
                             display_object(transfer);
                         }
                     }
-                },
-                else => {
-                    print("Unsupported command: {any}.\n", .{operation});
                 },
             }
         }
