@@ -5,6 +5,8 @@ const assert = std.debug.assert;
 const constants = @import("../constants.zig");
 const stdx = @import("../stdx.zig");
 
+const build_options = @import("vsr_options");
+
 const vsr = @import("vsr");
 const IO = vsr.io.IO;
 const MessagePool = vsr.message_pool.MessagePool;
@@ -412,8 +414,8 @@ pub fn ClientType(comptime StateMachine: type, comptime MessageBus: type) type {
         }
 
         fn display_help() void {
-            print(
-                \\TigerBeetle CLI Client
+            const version = build_options.git_tag orelse "experimental";
+            print("TigerBeetle CLI Client " ++ version ++ "\n" ++
                 \\  Hit enter after a semicolon to run a command.
                 \\
                 \\Examples:
