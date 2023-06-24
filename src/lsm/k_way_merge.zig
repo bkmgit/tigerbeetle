@@ -17,7 +17,7 @@ pub fn KWayMergeIteratorType(
     comptime stream_peek: fn (
         context: *const Context,
         stream_index: u32,
-    ) error{ Empty, Drained }!Key,
+    ) error{ Again, EOF }!Key,
     comptime stream_pop: fn (context: *Context, stream_index: u32) Value,
     /// Returns true if stream A has higher precedence than stream B.
     /// This is used to deduplicate values across streams.
@@ -71,8 +71,8 @@ pub fn KWayMergeIteratorType(
                 it.keys[it.k] = stream_peek(context, stream_index) catch |err| switch (err) {
                     // On initialization, the streams should either have data already
                     // buffered up to peek or be empty and have no more values to produce.
-                    error.Drained => unreachable,
-                    error.Empty => continue,
+                    error.Again => unreachable,
+                    error.EOF => continue,
                 };
                 it.streams[it.k] = stream_index;
                 it.up_heap(it.k);
@@ -86,8 +86,8 @@ pub fn KWayMergeIteratorType(
             return it.k == 0;
         }
 
-        pub fn pop(it: *Self) ?Value {
-            while (it.pop_internal()) |value| {
+        pub fn pop(it: *Self) error{Again}!?Value {
+            while (try it.pop_internal()) |value| {
                 const key = key_from_value(&value);
                 if (it.previous_key_popped) |previous| {
                     switch (compare_keys(previous, key)) {
@@ -104,7 +104,7 @@ pub fn KWayMergeIteratorType(
             return null;
         }
 
-        fn pop_internal(it: *Self) ?Value {
+        fn pop_internal(it: *Self) error{Again}!?Value {
             if (it.k == 0) return null;
 
             // We update the heap prior to removing the value from the stream. If we updated after
@@ -114,8 +114,8 @@ pub fn KWayMergeIteratorType(
                 it.keys[0] = key;
                 it.down_heap();
             } else |err| switch (err) {
-                error.Drained => return null,
-                error.Empty => {
+                error.Again => return error.Again,
+                error.EOF => {
                     it.swap(0, it.k - 1);
                     it.k -= 1;
                     it.down_heap();
@@ -225,10 +225,10 @@ fn TestContext(comptime k_max: u32) type {
             return math.order(a, b);
         }
 
-        fn stream_peek(context: *const Self, stream_index: u32) error{ Empty, Drained }!u32 {
+        fn stream_peek(context: *const Self, stream_index: u32) error{ Again, EOF }!u32 {
             // TODO: test for Drained somehow as well
             const stream = context.streams[stream_index];
-            if (stream.len == 0) return error.Empty;
+            if (stream.len == 0) return error.EOF;
             return stream[0].key;
         }
 
@@ -281,7 +281,7 @@ fn TestContext(comptime k_max: u32) type {
             var context: Self = .{ .streams = streams };
             var kway = KWay.init(&context, @intCast(u32, streams_keys.len), direction);
 
-            while (kway.pop()) |value| {
+            while (try kway.pop()) |value| {
                 try actual.append(value);
             }
 

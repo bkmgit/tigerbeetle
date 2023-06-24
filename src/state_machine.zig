@@ -507,12 +507,12 @@ pub fn StateMachineType(
             }
         }
 
-        fn on_debit_account_id_scan_fetch(context: *ScanContext, value_maybe: ?TDebitAccountId.Table.Value) void {
+        fn on_debit_account_id_scan_fetch(context: *ScanContext, value_or_end: ?TDebitAccountId.Table.Value) void {
             // EXPERIMENTAL:
             var self = @fieldParentPtr(StateMachine, "scan_context", context);
             var scan = &self.forest.grooves.transfers.indexes.debit_account_id.scan;
 
-            if (value_maybe) |value| {
+            if (value_or_end) |value| {
                 // Asserting if we are iterating in the expected direction.
                 if (self.scan_value_last) |last| {
                     const order = TDebitAccountId.Table.compare_keys(

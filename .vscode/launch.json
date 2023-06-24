@@ -23,5 +23,24 @@
             "environment": [],
             "preLaunchTask": "build tests",
         },         
+        {
+            "name": "debug fuzz_lsm_tree",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/zig-out/bin/fuzz_lsm_tree",
+            "args": [ ],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "preLaunchTask": "build fuzz_lsm_tree",
+        }, 
+        {
+            "name": "(gdb) Attach",
+            "type": "cppdbg",
+            "request": "attach",
+            "program": "",
+            "MIMode": "gdb",
+            "setupCommands": []
+        },
     ]
 }

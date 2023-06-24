@@ -160,16 +160,8 @@ pub fn ScanType(
             iterator: LevelIterator,
             buffer: ScanContext.LevelBuffer,
             cursor: union(enum) {
-                /// Loading index_block from storage.
-                load,
-
-                /// Moving LevelIterator to the next position.
-                next: Cursor,
-
-                /// Positioned at a valid index.
-                current: Cursor,
-
-                /// There is no data or it has reached the end.
+                loading,
+                loaded: Cursor,
                 eof,
             },
         };
@@ -236,6 +228,7 @@ pub fn ScanType(
         ) void {
             assert(scan.level_state == .idle);
             assert(scan.merge_iterator == null);
+            assert(Table.compare_keys(key_min, key_max) != .gt);
 
             // TODO It's a temporary solution until
             // we can iterate over table mutable in sorted order.
@@ -263,44 +256,46 @@ pub fn ScanType(
                     Value,
                     key_from_value,
                     compare_keys,
-                    tree.table_immutable.values,
+                    if (!tree.table_immutable.free and tree.table_immutable.snapshot_min <= snapshot)
+                        tree.table_immutable.values
+                    else
+                        &[_]Value{},
                     key_min,
                     key_max,
                     .{},
                 ), direction),
 
                 .level_state = .{ .seeking = context },
-                .level_scans = level_scans: {
-                    const buffer = context.get_buffer();
-                    for (scan.level_scans) |*level, i| {
-                        level.* = .{
-                            .scan = scan,
-                            .iterator = LevelIterator.init(),
-                            .buffer = buffer.levels[i],
-                            .cursor = .load,
-                        };
 
-                        level.iterator.start(
-                            .{
-                                .grid = grid,
-                                .manifest = &tree.manifest,
-                                .level = @intCast(u8, i),
-                                .snapshot = snapshot,
-                                .key_min = key_min,
-                                .key_max = key_max,
-                                .direction = direction,
-                            },
-                            level.buffer.index_block,
-                        );
-                    }
-
-                    // Don't move level_scans during initialization.
-                    break :level_scans scan.level_scans;
-                },
+                // Don't move level_scans during initialization.
+                .level_scans = scan.level_scans,
 
                 .merge_iterator = null,
                 .tracer_slot = scan.tracer_slot,
             };
+
+            const buffer = context.get_buffer();
+            for (scan.level_scans) |*level, i| {
+                level.* = .{
+                    .scan = scan,
+                    .iterator = LevelIterator.init(),
+                    .buffer = buffer.levels[i],
+                    .cursor = .loading,
+                };
+
+                level.iterator.start(
+                    .{
+                        .grid = grid,
+                        .manifest = &tree.manifest,
+                        .level = @intCast(u8, i),
+                        .snapshot = snapshot,
+                        .key_min = key_min,
+                        .key_max = key_max,
+                        .direction = direction,
+                    },
+                    level.buffer.index_block,
+                );
+            }
         }
 
         pub fn fetch(scan: *Scan, callback: Callback) void {
@@ -321,7 +316,7 @@ pub fn ScanType(
 
             for (scan.level_scans) |*level| {
                 switch (level.cursor) {
-                    .load, .next => {
+                    .loading => {
                         scan.level_state.fetching.pending_count += 1;
                         level.iterator.next(.{
                             .on_index = on_level_index_block,
@@ -362,8 +357,13 @@ pub fn ScanType(
                 );
             }
 
-            const value = scan.merge_iterator.?.pop();
-            callback(context, value);
+            const value_or_end: ?Value = scan.merge_iterator.?.pop() catch |err| switch (err) {
+                error.Again => {
+                    scan.fetch(callback);
+                    return;
+                },
+            };
+            callback(context, value_or_end);
         }
 
         pub fn on_level_index_block(
@@ -373,27 +373,30 @@ pub fn ScanType(
         ) LevelIterator.DataBlockAddresses {
             _ = table_info;
             const level = @fieldParentPtr(LevelScan, "iterator", iterator);
-            assert(level.cursor == .load);
+            assert(level.cursor == .loading);
             assert(level.scan.level_state == .fetching);
             assert(level.scan.level_state.fetching.pending_count > 0);
 
-            const cursor = Cursor.init(binary_search.binary_search_keys_range(
+            const keys = Table.index_data_keys_used(index_block);
+            const range = binary_search.binary_search_keys_range_raw(
                 Key,
                 compare_keys,
-                Table.index_data_keys_used(index_block),
+                keys,
                 iterator.context.key_min,
                 iterator.context.key_max,
                 .{},
-            ), level.scan.direction);
+            );
 
-            level.cursor = if (cursor.empty()) .eof else .{ .next = cursor };
-            return .{
-                .addresses = cursor.slice(
-                    Table.index_data_addresses_used(index_block),
-                ),
-                .checksums = cursor.slice(
-                    Table.index_data_checksums_used(index_block),
-                ),
+            level.cursor = .loading;
+            if (range.start == keys.len) return .{
+                .addresses = &[_]u64{},
+                .checksums = &[_]u128{},
+            } else if (range.end == keys.len) return .{
+                .addresses = Table.index_data_addresses_used(index_block)[range.start..],
+                .checksums = Table.index_data_checksums_used(index_block)[range.start..],
+            } else return .{
+                .addresses = Table.index_data_addresses_used(index_block)[range.start .. range.end + 1],
+                .checksums = Table.index_data_checksums_used(index_block)[range.start .. range.end + 1],
             };
         }
 
@@ -401,26 +404,53 @@ pub fn ScanType(
             const level = @fieldParentPtr(LevelScan, "iterator", iterator);
             assert(level.scan.level_state == .fetching);
             assert(level.scan.level_state.fetching.pending_count > 0);
-            defer {
-                level.scan.level_state.fetching.pending_count -= 1;
-                if (level.scan.level_state.fetching.pending_count == 0) level.scan.on_fetch();
-            }
 
             if (data_block) |data| {
                 stdx.copy_disjoint(.exact, u8, level.buffer.data_block, data);
+
+                var values = Table.data_block_values_used(level.buffer.data_block);
+                const range = binary_search.binary_search_values_range(
+                    Key,
+                    Value,
+                    key_from_value,
+                    compare_keys,
+                    values,
+                    level.iterator.context.key_min,
+                    level.iterator.context.key_max,
+                    .{},
+                );
+
                 switch (level.cursor) {
-                    .next => |cursor| level.cursor = .{ .current = cursor },
+                    .loading => if (range.count > 0) {
+                        level.cursor = .{
+                            .loaded = Cursor.init(range, level.scan.direction),
+                        };
+                    },
                     else => unreachable,
                 }
             } else {
                 level.cursor = .eof;
+            }
+
+            switch (level.cursor) {
+                // Keep loading.
+                .loading => level.iterator.next(.{
+                    .on_index = on_level_index_block,
+                    .on_data = on_level_data_block,
+                }),
+
+                // Finished.
+                .loaded, .eof => {
+                    level.scan.level_state.fetching.pending_count -= 1;
+                    if (level.scan.level_state.fetching.pending_count == 0) level.scan.on_fetch();
+                },
             }
         }
 
         fn merge_stream_peek(
             scan: *const Scan,
             stream_index: u32,
-        ) error{ Empty, Drained }!Key {
+        ) error{ Again, EOF }!Key {
             assert(scan.level_state == .seeking);
             assert(stream_index < KWayMergeStreams.streams_count);
 
@@ -431,35 +461,41 @@ pub fn ScanType(
             };
         }
 
-        fn merge_table_mutable_peek(scan: *const Scan) error{ Empty, Drained }!Key {
-            if (scan.table_mutable_cursor.range.count == 0) return error.Empty;
-
+        fn merge_table_mutable_peek(scan: *const Scan) error{ Again, EOF }!Key {
             const value: *const Value = scan.table_mutable_cursor.get(
                 scan.table_mutable_values,
-            ) orelse return error.Drained;
-            return key_from_value(value);
+            ) orelse return error.EOF;
+
+            const key = key_from_value(value);
+            return key;
         }
 
-        fn merge_table_immutable_peek(scan: *const Scan) error{ Empty, Drained }!Key {
-            if (scan.table_immutable_cursor.range.count == 0) return error.Empty;
-
+        fn merge_table_immutable_peek(scan: *const Scan) error{ Again, EOF }!Key {
             const value: *const Value = scan.table_immutable_cursor.get(
                 scan.tree.table_immutable.values,
-            ) orelse return error.Drained;
-            return key_from_value(value);
+            ) orelse return error.EOF;
+
+            const key = key_from_value(value);
+            return key;
         }
 
-        fn merge_level_peek(scan: *const Scan, level_index: u32) error{ Empty, Drained }!Key {
+        fn merge_level_peek(scan: *const Scan, level_index: u32) error{ Again, EOF }!Key {
             var level = &scan.level_scans[level_index];
             switch (level.cursor) {
-                .load, .next => unreachable,
-                .current => |cursor| {
-                    const key = cursor.get(
-                        Table.index_data_keys_used(level.buffer.index_block),
-                    ) orelse return error.Drained;
-                    return key.*;
+                .loading => return error.Again,
+                .loaded => |cursor| {
+                    const value: ?*const Value = cursor.get(
+                        Table.data_block_values_used(level.buffer.data_block),
+                    );
+
+                    // It's not expected to be null here,
+                    // since the previous pop must have triggered the iterator
+                    // in the case of EOF.
+                    assert(value != null);
+
+                    return key_from_value(value.?);
                 },
-                .eof => return error.Empty,
+                .eof => return error.EOF,
             }
         }
 
@@ -494,18 +530,15 @@ pub fn ScanType(
         fn merge_level_pop(scan: *Scan, level_index: u32) Value {
             var level = &scan.level_scans[level_index];
             switch (level.cursor) {
-                .current => |*cursor| {
-                    const key = cursor.get(
-                        Table.index_data_keys_used(level.buffer.index_block),
+                .loaded => |*cursor| {
+                    const value = cursor.get(
+                        Table.data_block_values_used(level.buffer.data_block),
                     ) orelse unreachable;
 
-                    const value = Table.data_block_search(level.buffer.data_block, key.*);
-                    assert(value != null);
-
-                    level.cursor = if (cursor.move(scan.direction)) .{
-                        .next = cursor.*,
-                    } else .load;
-                    return value.?.*;
+                    if (!cursor.move(scan.direction)) {
+                        level.cursor = .loading;
+                    }
+                    return value.*;
                 },
                 else => unreachable,
             }

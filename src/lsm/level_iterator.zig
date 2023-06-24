@@ -201,6 +201,8 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
             index_block_buffer: BlockPtr,
         ) void {
             assert(it.callback == .none);
+            assert(Table.compare_keys(context.key_min, context.key_max) != .gt);
+
             it.* = .{
                 .context = context,
                 .level_index_iterator = it.level_index_iterator,
@@ -261,7 +263,11 @@ pub fn LevelIteratorType(comptime Table: type, comptime Storage: type) type {
                 // `index_block` is only valid for this callback, so copy it's contents.
                 // TODO(jamii) This copy can be avoided if we bypass the cache.
                 stdx.copy_disjoint(.exact, u8, it.index_block, block);
+
+                // Fn on_index is responsible for filtering the blocks.
                 const data_block_addresses = callback.on_index(it, table_info.?, it.index_block);
+                assert(data_block_addresses.addresses.len == data_block_addresses.checksums.len);
+
                 it.table_data_iterator.start(.{
                     .grid = it.context.grid,
                     .addresses = data_block_addresses.addresses,

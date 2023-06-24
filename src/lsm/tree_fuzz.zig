@@ -7,10 +7,13 @@ const stdx = @import("../stdx.zig");
 const constants = @import("../constants.zig");
 const fuzz = @import("../testing/fuzz.zig");
 const vsr = @import("../vsr.zig");
+const snapshot_latest = @import("tree.zig").snapshot_latest;
+const binary_search = @import("binary_search.zig");
 
 const log = std.log.scoped(.lsm_tree_fuzz);
 const tracer = @import("../tracer.zig");
 
+const Direction = @import("direction.zig").Direction;
 const Transfer = @import("../tigerbeetle.zig").Transfer;
 const Account = @import("../tigerbeetle.zig").Account;
 const Storage = @import("../testing/storage.zig").Storage;
@@ -21,9 +24,11 @@ const alloc_block = @import("grid.zig").alloc_block;
 const NodePool = @import("node_pool.zig").NodePool(constants.lsm_manifest_node_size, 16);
 const TableUsage = @import("table.zig").TableUsage;
 const TableType = @import("table.zig").TableType;
+const ScanContextType = @import("scan_context.zig").ScanContextType;
 
 const Grid = GridType(Storage);
 const SuperBlock = vsr.SuperBlockType(Storage);
+const ScanContext = ScanContextType(Storage);
 
 pub const tigerbeetle_config = @import("../config.zig").configs.fuzz_min;
 
@@ -73,6 +78,11 @@ const FuzzOp = union(enum) {
     put: Key.Value,
     remove: Key.Value,
     get: Key,
+    scan: struct {
+        min: u64,
+        max: u64,
+        direction: Direction,
+    },
 };
 
 const batch_size_max = constants.message_size_max - @sizeOf(vsr.Header);
@@ -83,6 +93,7 @@ const cluster = 32;
 const replica = 4;
 const replica_count = 6;
 const node_count = 1024;
+const scan_buffer_max = 4096;
 const tree_options = .{
     // This is the smallest size that set_associative_cache will allow us.
     .cache_entries_max = 2048,
@@ -126,6 +137,7 @@ fn EnvironmentType(comptime table_usage: TableUsage) type {
             tree_checkpoint,
             superblock_checkpoint,
             tree_lookup,
+            tree_scan,
         };
 
         const GridRepairQueue = std.ArrayList(struct {
@@ -146,6 +158,9 @@ fn EnvironmentType(comptime table_usage: TableUsage) type {
         lookup_context: Tree.LookupContext,
         lookup_value: ?*const Key.Value,
         checkpoint_op: ?u64,
+        scan_context: ScanContext,
+        scan_buffer: []Key.Value,
+        scan_count: u32,
 
         pub fn run(storage: *Storage, fuzz_ops: []const FuzzOp) !void {
             var env: Environment = undefined;
@@ -176,6 +191,13 @@ fn EnvironmentType(comptime table_usage: TableUsage) type {
             env.tree = undefined;
             env.lookup_value = null;
             env.checkpoint_op = null;
+
+            env.scan_context = try ScanContext.init(allocator);
+            defer env.scan_context.deinit(allocator);
+
+            env.scan_buffer = try allocator.alloc(Key.Value, scan_buffer_max);
+            env.scan_count = 0;
+            defer allocator.free(env.scan_buffer);
 
             try env.open_then_apply(fuzz_ops);
         }
@@ -290,6 +312,42 @@ fn EnvironmentType(comptime table_usage: TableUsage) type {
             env.change_state(.tree_lookup, .fuzzing);
         }
 
+        pub fn scan(env: *Environment, key_min: Key, key_max: Key, direction: Direction) []Key.Value {
+            assert(Table.compare_keys(key_min, key_max) != .gt);
+
+            env.change_state(.fuzzing, .tree_scan);
+            env.tree.scan.seek(
+                &env.scan_context,
+                &env.grid,
+                &env.tree,
+                env.tree.lookup_snapshot_max,
+                key_min,
+                key_max,
+                direction,
+            );
+
+            env.scan_count = 0;
+            env.tree.scan.fetch(on_scan);
+            env.tick_until_state_change(.tree_scan, .fuzzing);
+            env.scan_context.reset();
+            env.tree.scan.reset();
+
+            return env.scan_buffer[0..env.scan_count];
+        }
+
+        fn on_scan(context: *ScanContext, value_or_end: ?Key.Value) void {
+            const env = @fieldParentPtr(Environment, "scan_context", context);
+
+            if (env.scan_count < scan_buffer_max and value_or_end != null) {
+                env.scan_buffer[env.scan_count] = value_or_end.?;
+                env.scan_count += 1;
+
+                env.tree.scan.fetch(on_scan);
+            } else {
+                env.change_state(.tree_scan, .fuzzing);
+            }
+        }
+
         pub fn apply(env: *Environment, fuzz_ops: []const FuzzOp) !void {
             // The tree should behave like a simple key-value data-structure.
             // We'll compare it to a hash map.
@@ -357,6 +415,137 @@ fn EnvironmentType(comptime table_usage: TableUsage) type {
                                         std.mem.asBytes(&Key.key_from_value(tree_value.?)),
                                     ));
                                 },
+                            }
+                        }
+                    },
+                    .scan => |scan| {
+                        const key_min = Key{ .id = scan.min };
+                        const key_max = Key{ .id = scan.max };
+                        assert(Key.compare_keys(key_min, key_max) != .gt);
+
+                        const tree_values = env.scan(
+                            key_min,
+                            key_max,
+                            scan.direction,
+                        );
+
+                        // Asserting the positive space:
+                        // all keys found by the scan must exist in our model.
+                        var tree_value_last: ?Key.Value = null;
+                        for (tree_values) |tree_value| {
+
+                            // Asserting boundaries.
+                            assert(
+                                Table.compare_keys(
+                                    Table.key_from_value(&tree_value),
+                                    key_min,
+                                ) != .lt,
+                            );
+                            assert(
+                                Table.compare_keys(
+                                    Table.key_from_value(&tree_value),
+                                    key_max,
+                                ) != .gt,
+                            );
+
+                            // Asserting direction.
+                            if (tree_value_last) |value_last| {
+                                switch (scan.direction) {
+                                    .ascending => assert(
+                                        Table.compare_keys(
+                                            Table.key_from_value(&tree_value),
+                                            Table.key_from_value(&value_last),
+                                        ) == .gt,
+                                    ),
+                                    .descending => assert(
+                                        Table.compare_keys(
+                                            Table.key_from_value(&tree_value),
+                                            Table.key_from_value(&value_last),
+                                        ) == .lt,
+                                    ),
+                                }
+                            }
+                            tree_value_last = tree_value;
+
+                            // Compare result to model.
+                            if (model.get(Table.key_from_value(&tree_value))) |model_value| {
+                                switch (table_usage) {
+                                    .general => {
+                                        assert(std.mem.eql(
+                                            u8,
+                                            std.mem.asBytes(&model_value),
+                                            std.mem.asBytes(&tree_value),
+                                        ));
+                                    },
+                                    .secondary_index => {
+                                        // secondary_index only preserves keys - may return old values
+                                        assert(std.mem.eql(
+                                            u8,
+                                            std.mem.asBytes(&Key.key_from_value(&model_value)),
+                                            std.mem.asBytes(&Key.key_from_value(&tree_value)),
+                                        ));
+                                    },
+                                }
+                            } else {
+                                assert(Table.tombstone(&tree_value));
+                            }
+                        }
+
+                        // Asserting the negative space:
+                        // All keys existing in our model must be checked against the scan range.
+                        if (scan.direction == .descending) std.sort.sort(
+                            Key.Value,
+                            tree_values,
+                            {},
+                            struct {
+                                fn sort(_: void, a: Key.Value, b: Key.Value) bool {
+                                    return Key.compare_keys(
+                                        Key.key_from_value(&a),
+                                        Key.key_from_value(&b),
+                                    ) == .lt;
+                                }
+                            }.sort,
+                        );
+
+                        var it = model.iterator();
+                        while (it.next()) |entry| {
+                            const model_value_key = Key.key_from_value(entry.value_ptr);
+                            const search = binary_search.binary_search_values(
+                                Key,
+                                Key.Value,
+                                Key.key_from_value,
+                                Key.compare_keys,
+                                tree_values,
+                                model_value_key,
+                                .{},
+                            );
+
+                            if (Key.compare_keys(model_value_key, key_min) != .lt and
+                                Key.compare_keys(model_value_key, key_max) != .gt)
+                            {
+                                // Must be found:
+                                if (!search.exact) {
+                                    // Or our buffer has exceeded, in this case the key should
+                                    // be less than the first element or greater than the last element,
+                                    // depending on the scan direction.
+                                    assert(tree_values.len == scan_buffer_max);
+                                    switch (scan.direction) {
+                                        .ascending => assert(Key.compare_keys(
+                                            model_value_key,
+                                            Key.key_from_value(&tree_values[tree_values.len - 1]),
+                                        ) == .gt),
+                                        .descending => assert(Key.compare_keys(
+                                            model_value_key,
+                                            Key.key_from_value(&tree_values[0]),
+                                        ) == .lt),
+                                    }
+                                }
+                            } else {
+                                // Must not be found:
+                                if (search.exact) {
+                                    // Or it's a tombstone.
+                                    assert(Key.tombstone(&tree_values[search.index]));
+                                }
                             }
                         }
                     },
@@ -439,6 +628,8 @@ pub fn generate_fuzz_ops(random: std.rand.Random, fuzz_op_count: usize) ![]const
         .remove = if (random.boolean()) 0 else constants.lsm_batch_multiple,
         // Maybe do some gets.
         .get = if (random.boolean()) 0 else constants.lsm_batch_multiple,
+        // Maybe do some scans.
+        .scan = constants.lsm_batch_multiple, //if (random.boolean()) 0 else constants.lsm_batch_multiple,
     };
     log.info("fuzz_op_distribution = {d:.2}", .{fuzz_op_distribution});
 
@@ -482,12 +673,25 @@ pub fn generate_fuzz_ops(random: std.rand.Random, fuzz_op_count: usize) ![]const
             .get => FuzzOp{ .get = .{
                 .id = random_id(random, u64),
             } },
+            .scan => blk: {
+                const min = random_id(random, u64);
+                const max = min + random_id(random, u64);
+                const direction = random.enumValue(Direction);
+                assert(min <= max);
+                break :blk FuzzOp{
+                    .scan = .{
+                        .min = min,
+                        .max = max,
+                        .direction = direction,
+                    },
+                };
+            },
         };
         switch (fuzz_op.*) {
             .compact => puts_since_compact = 0,
             // Tree.remove() works by inserting a tombstone, so it counts as a put.
             .put, .remove => puts_since_compact += 1,
-            .get => {},
+            .get, .scan => {},
         }
     }
 
@@ -503,7 +707,7 @@ pub fn main() !void {
     var rng = std.rand.DefaultPrng.init(fuzz_args.seed);
     const random = rng.random();
 
-    const table_usage = TableUsage.secondary_index; // random.enumValue(TableUsage);
+    const table_usage = random.enumValue(TableUsage);
     log.info("table_usage={}", .{table_usage});
 
     const storage_fault_atlas = ClusterFaultAtlas.init(3, random, .{
